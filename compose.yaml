@@ -2,7 +2,7 @@ name: tesla-dashboard
 
 services:
   database:
-    image: postgres:18-trixie
+    image: ${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}/postgres:${POSTGRES_TAG:-18-trixie}
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${TM_DB_USER:-teslamate}
@@ -24,7 +24,7 @@ services:
       - no-new-privileges:true
 
   mosquitto:
-    image: eclipse-mosquitto:2
+    image: ${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}/eclipse-mosquitto:${MOSQUITTO_TAG:-2}
     restart: unless-stopped
     command: mosquitto -c /mosquitto-no-auth.conf
     volumes:
@@ -36,7 +36,7 @@ services:
       - no-new-privileges:true
 
   teslamate:
-    image: teslamate/teslamate:${TESLAMATE_TAG:-latest}
+    image: ${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}/teslamate:${TESLAMATE_TAG:-latest}
     restart: unless-stopped
     depends_on:
       database:
@@ -62,7 +62,7 @@ services:
       - all
 
   db-init:
-    image: postgres:18-trixie
+    image: ${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}/postgres:${POSTGRES_TAG:-18-trixie}
     restart: "no"
     depends_on:
       database:

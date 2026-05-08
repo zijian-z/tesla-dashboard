@@ -65,3 +65,42 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  mirror-runtime-images:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - source: postgres:18-trixie
+            image: postgres
+            tag: 18-trixie
+          - source: eclipse-mosquitto:2
+            image: eclipse-mosquitto
+            tag: "2"
+          - source: teslamate/teslamate:latest
+            image: teslamate
+            tag: latest
+
+    steps:
+      - name: Login to Aliyun Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ALIYUN_REGISTRY }}
+          username: ${{ secrets.ALIYUN_REGISTRY_USER }}
+          password: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
+
+      - name: Mirror image
+        shell: bash
+        env:
+          REGISTRY: ${{ secrets.ALIYUN_REGISTRY }}
+          NAMESPACE: ${{ secrets.ALIYUN_NAME_SPACE }}
+          SOURCE_IMAGE: ${{ matrix.source }}
+          TARGET_IMAGE: ${{ matrix.image }}
+          TARGET_TAG: ${{ matrix.tag }}
+        run: |
+          set -euo pipefail
+          TARGET="${REGISTRY}/${NAMESPACE}/${TARGET_IMAGE}:${TARGET_TAG}"
+          docker pull "${SOURCE_IMAGE}"
+          docker tag "${SOURCE_IMAGE}" "${TARGET}"
+          docker push "${TARGET}"

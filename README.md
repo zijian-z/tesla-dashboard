@@ -92,6 +92,8 @@ WEB_PORT=8080
 BASIC_AUTH_USER=admin
 BASIC_AUTH_PASSWORD=change-this-password
 
+POSTGRES_TAG=18-trixie
+MOSQUITTO_TAG=2
 TESLAMATE_TAG=latest
 TM_ENCRYPTION_KEY=replace-with-a-long-random-encryption-key
 TM_DB_USER=teslamate
@@ -110,6 +112,8 @@ openssl rand -base64 48
 ```
 
 `TM_ENCRYPTION_KEY` 是 TeslaMate 加密密钥，生产环境创建后要妥善保管。`DASHBOARD_DB_USER` 会由 `db-init` 自动创建为只读账号；它只获得 `public` schema 的读权限，不会获得 `private` schema 权限。
+
+大陆机器部署前，先在 GitHub Actions 手工运行一次 `Build and Push Images`，把本项目镜像和运行依赖镜像都推送到阿里云镜像仓库。生产 `compose.yaml` 默认会从 `${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}` 拉取所有镜像，不再直接依赖 Docker Hub。
 
 ### 2. 启动
 
@@ -171,6 +175,9 @@ http://部署机IP:8080
 ```text
 registry.cn-shenzhen.aliyuncs.com/your-namespace/tesla-dashboard-api:<image_tag>
 registry.cn-shenzhen.aliyuncs.com/your-namespace/tesla-dashboard-web:<image_tag>
+registry.cn-shenzhen.aliyuncs.com/your-namespace/postgres:18-trixie
+registry.cn-shenzhen.aliyuncs.com/your-namespace/eclipse-mosquitto:2
+registry.cn-shenzhen.aliyuncs.com/your-namespace/teslamate:latest
 ```
 
 ## 直接开发
