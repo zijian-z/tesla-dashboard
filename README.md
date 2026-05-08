@@ -162,9 +162,9 @@ http://部署机IP:8080
 | Secret | 示例 |
 | --- | --- |
 | `ALIYUN_REGISTRY` | `registry.cn-shenzhen.aliyuncs.com` |
-| `ALIYUN_NAMESPACE` | `your-namespace` |
-| `ALIYUN_USERNAME` | 阿里云镜像仓库用户名 |
-| `ALIYUN_PASSWORD` | 阿里云镜像仓库密码或访问凭证 |
+| `ALIYUN_NAME_SPACE` | `your-namespace` |
+| `ALIYUN_REGISTRY_USER` | 阿里云镜像仓库用户名 |
+| `ALIYUN_REGISTRY_PASSWORD` | 阿里云镜像仓库密码或访问凭证 |
 
 这个 workflow 只支持手工触发。到 GitHub Actions 页面选择 `Build and Push Images`，点击 `Run workflow`，填写镜像 tag，默认是 `latest`。
 
