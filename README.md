@@ -16,7 +16,7 @@ Nginx / Frontend  -- 内网 HTTP -->  FastAPI Backend  -- Docker 内网 -->  Pos
 TeslaMate Collector  -- 内网 --> PostgreSQL + MQTT
 ```
 
-默认生产部署只发布 `web` 的 `WEB_PORT`。`api` 只在 Docker 内网暴露 `8000`，TeslaMate 只在 Docker 内网暴露 `4000`，PostgreSQL 和 MQTT 也都只在内网可见。`database` 镜像内置首次启动恢复备份脚本，`db-init` 服务会自动创建只读数据库账号，不需要手工执行 SQL，也不需要在部署目录额外复制脚本文件。
+默认生产部署只发布 `web` 的 `WEB_PORT`。`api` 只在 Docker 内网暴露 `8000`，TeslaMate 只在 Docker 内网暴露 `4000`，PostgreSQL 和 MQTT 也都只在内网可见。`database` 镜像内置首次启动恢复备份脚本，恢复后会自动清空备份里的旧 TeslaMate token，`db-init` 服务会自动创建只读数据库账号，不需要手工执行 SQL，也不需要在部署目录额外复制脚本文件。
 
 ## 功能
 
@@ -29,7 +29,7 @@ TeslaMate Collector  -- 内网 --> PostgreSQL + MQTT
 
 ## 本地用当前备份验证
 
-当前目录里的 `teslamate.bck` 是 PostgreSQL 18 plain SQL dump，可以直接用本地 compose 恢复测试库：
+当前目录里的 `teslamate.bck` 是 PostgreSQL 18 plain SQL dump，可以直接用本地 compose 通过同一套恢复脚本恢复测试库。恢复完成后，脚本会自动清空备份里的旧 TeslaMate token：
 
 ```bash
 docker compose version
@@ -164,7 +164,7 @@ http://部署机IP:8080
 
 如果目录里有多个备份文件，脚本会按名称优先级取第一个匹配项。这个导入只在数据库卷首次初始化时执行一次；后续镜像更新、容器重启不会再次导入，也不会覆盖已有数据。若要重新导入，需要先删除对应的 PostgreSQL volume。
 
-如果备份里包含旧的 TeslaMate token，并且 `TM_ENCRYPTION_KEY` 也保持一致，那么恢复后通常可以直接继续使用，不需要重新额外配置授权 token。
+恢复脚本会在备份导入完成后自动清空 `private.tokens`。如果备份来自旧版 TeslaMate，脚本也会兼容清空 `public.tokens`。这样历史行程、充电、位置等数据会保留，但不会继承备份里的旧 Tesla 授权；启动后访问 `http://部署机IP:8080/teslamate/` 重新完成授权即可。
 
 完整重建并重新导入备份：
 

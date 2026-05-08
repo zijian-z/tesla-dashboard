@@ -2,7 +2,9 @@ name: tesla-dashboard-local
 
 services:
   db:
-    image: postgres:18-trixie
+    build:
+      context: ./deploy
+      dockerfile: Dockerfile.postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: teslamate
@@ -10,7 +12,7 @@ services:
       POSTGRES_DB: teslamate
     volumes:
       - pgdata18:/var/lib/postgresql
-      - ./teslamate.bck:/docker-entrypoint-initdb.d/10-teslamate.sql:ro
+      - ./:/backup-source:ro
     networks:
       - data
     healthcheck:

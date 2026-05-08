@@ -46,6 +46,16 @@ fi
 
 echo "Restoring TeslaMate database backup: $backup_file"
 
+prepare_database_for_restore() {
+  psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<'SQL'
+DROP SCHEMA IF EXISTS public CASCADE;
+DROP SCHEMA IF EXISTS private CASCADE;
+CREATE SCHEMA public;
+CREATE EXTENSION IF NOT EXISTS cube WITH SCHEMA public;
+CREATE EXTENSION IF NOT EXISTS earthdistance WITH SCHEMA public;
+SQL
+}
+
 restore_dump_or_sql() {
   candidate="$1"
 
@@ -55,6 +65,41 @@ restore_dump_or_sql() {
     psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" < "$candidate"
   fi
 }
+
+clear_restored_teslamate_tokens() {
+  echo "Clearing restored TeslaMate API tokens so this instance can be authorized fresh."
+
+  psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<'SQL'
+DO $$
+DECLARE
+  token_table record;
+  cleared_count integer := 0;
+BEGIN
+  FOR token_table IN
+    SELECT table_schema, table_name
+    FROM information_schema.tables
+    WHERE table_name = 'tokens'
+      AND table_schema IN ('private', 'public')
+      AND table_type = 'BASE TABLE'
+  LOOP
+    EXECUTE format(
+      'TRUNCATE TABLE %I.%I RESTART IDENTITY CASCADE',
+      token_table.table_schema,
+      token_table.table_name
+    );
+    cleared_count := cleared_count + 1;
+    RAISE NOTICE 'Cleared restored TeslaMate tokens from %.%', token_table.table_schema, token_table.table_name;
+  END LOOP;
+
+  IF cleared_count = 0 THEN
+    RAISE NOTICE 'No TeslaMate tokens table found to clear.';
+  END IF;
+END
+$$;
+SQL
+}
+
+prepare_database_for_restore
 
 case "$backup_file" in
   *.sql|*.bck)
@@ -80,5 +125,7 @@ case "$backup_file" in
     exit 1
     ;;
 esac
+
+clear_restored_teslamate_tokens
 
 echo "TeslaMate database backup restore completed."
