@@ -43,15 +43,23 @@ services:
       mosquitto:
         condition: service_started
     environment:
-      ENCRYPTION_KEY: ${TM_ENCRYPTION_KEY}
-      DATABASE_USER: ${TM_DB_USER:-teslamate}
-      DATABASE_PASS: ${TM_DB_PASS}
-      DATABASE_NAME: ${TM_DB_NAME:-teslamate}
-      DATABASE_HOST: database
-      MQTT_HOST: mosquitto
-      CHECK_ORIGIN: "false"
-      URL_PATH: /
-      TZ: ${TZ:-Asia/Shanghai}
+      - ENCRYPTION_KEY=${TM_ENCRYPTION_KEY}
+      - DATABASE_USER=${TM_DB_USER:-teslamate}
+      - DATABASE_PASS=${TM_DB_PASS}
+      - DATABASE_NAME=${TM_DB_NAME:-teslamate}
+      - DATABASE_HOST=database
+      - MQTT_HOST=mosquitto
+      - CHECK_ORIGIN=false
+      - URL_PATH=/
+      - TZ=${TZ:-Asia/Shanghai}
+      - TOKEN
+      - TESLA_API_HOST
+      - TESLA_AUTH_HOST
+      - TESLA_AUTH_PATH
+      - TESLA_AUTH_CLIENT_ID
+      - TESLA_WSS_HOST
+      - TESLA_WSS_TLS_ACCEPT_INVALID_CERTS
+      - TESLA_WSS_USE_VIN
     volumes:
       - ./import:/opt/app/import
     expose:

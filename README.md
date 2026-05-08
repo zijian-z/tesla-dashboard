@@ -112,6 +112,26 @@ openssl rand -base64 48
 
 `TM_ENCRYPTION_KEY` 是 TeslaMate 加密密钥，生产环境创建后要妥善保管。`DASHBOARD_DB_USER` 会由 `db-init` 自动创建为只读账号；它只获得 `public` schema 的读权限，不会获得 `private` schema 权限。
 
+如果 TeslaMate 登录成功但车辆状态一直不可用，并且日志里出现 `403` / `RBAC: access denied`，这通常不是反向代理问题，而是默认 Tesla Owner API 被 Tesla 拒绝。可以改用 TeslaMate 官方支持的第三方 API provider。以 MyTeslaMate 为例，在 `.env` 里加入：
+
+```dotenv
+TOKEN=?token=xxxx-xxxx-xxxx-xxxx
+TESLA_API_HOST=https://api.myteslamate.com
+TESLA_AUTH_HOST=https://api.myteslamate.com
+TESLA_AUTH_PATH=/api/oauth2/v3
+
+# 可选 streaming
+TESLA_WSS_HOST=wss://streaming.myteslamate.com
+TESLA_WSS_TLS_ACCEPT_INVALID_CERTS=true
+TESLA_WSS_USE_VIN=true
+```
+
+更新 `.env` 后重启 TeslaMate：
+
+```bash
+sudo docker compose up -d --force-recreate teslamate
+```
+
 大陆机器部署前，先在 GitHub Actions 手工运行一次 `Build and Push Images`，把本项目镜像和运行依赖镜像都推送到阿里云镜像仓库。生产 `compose.yaml` 默认会从 `${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}` 拉取所有镜像，不再直接依赖 Docker Hub。
 
 生产部署目录最少只需要这些文件：
