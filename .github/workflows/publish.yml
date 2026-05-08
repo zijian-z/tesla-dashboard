@@ -21,8 +21,13 @@ jobs:
         include:
           - image: tesla-dashboard-api
             context: ./backend
+            file: ./backend/Dockerfile
           - image: tesla-dashboard-web
             context: ./frontend
+            file: ./frontend/Dockerfile
+          - image: tesla-dashboard-postgres
+            context: ./deploy
+            file: ./deploy/Dockerfile.postgres
 
     steps:
       - name: Checkout
@@ -60,6 +65,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
           push: true
           platforms: linux/amd64
           tags: ${{ steps.tags.outputs.tags }}

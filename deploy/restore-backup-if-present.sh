@@ -46,20 +46,33 @@ fi
 
 echo "Restoring TeslaMate database backup: $backup_file"
 
+restore_dump_or_sql() {
+  candidate="$1"
+
+  if pg_restore --list "$candidate" >/dev/null 2>&1; then
+    pg_restore --verbose --no-owner --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" "$candidate"
+  else
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" < "$candidate"
+  fi
+}
+
 case "$backup_file" in
   *.sql|*.bck)
-    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" < "$backup_file"
+    restore_dump_or_sql "$backup_file"
     ;;
   *.sql.gz|*.bck.gz)
-    gzip -dc "$backup_file" | psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB"
+    tmp_file="/tmp/teslamate-restore"
+    gzip -dc "$backup_file" > "$tmp_file"
+    restore_dump_or_sql "$tmp_file"
+    rm -f "$tmp_file"
     ;;
   *.dump|*.backup)
-    pg_restore --verbose --no-owner --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" "$backup_file"
+    restore_dump_or_sql "$backup_file"
     ;;
   *.dump.gz|*.backup.gz)
     tmp_file="/tmp/teslamate-restore.dump"
     gzip -dc "$backup_file" > "$tmp_file"
-    pg_restore --verbose --no-owner --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" "$tmp_file"
+    restore_dump_or_sql "$tmp_file"
     rm -f "$tmp_file"
     ;;
   *)

@@ -10,10 +10,12 @@ set -eu
 
 export PGPASSWORD="$POSTGRES_PASSWORD"
 
+echo "Waiting for PostgreSQL at $POSTGRES_HOST..."
 until pg_isready -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; do
   sleep 1
 done
 
+echo "Creating or updating read-only dashboard role: $DASHBOARD_DB_USER"
 psql \
   -h "$POSTGRES_HOST" \
   -U "$POSTGRES_USER" \
@@ -52,3 +54,5 @@ begin
 end
 $$;
 SQL
+
+echo "Read-only dashboard role is ready: $DASHBOARD_DB_USER"

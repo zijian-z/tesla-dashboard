@@ -16,7 +16,7 @@ Nginx / Frontend  -- 内网 HTTP -->  FastAPI Backend  -- Docker 内网 -->  Pos
 TeslaMate Collector  -- 内网 --> PostgreSQL + MQTT
 ```
 
-默认生产部署只发布 `web` 的 `WEB_PORT`。`api` 只在 Docker 内网暴露 `8000`，TeslaMate 只在 Docker 内网暴露 `4000`，PostgreSQL 和 MQTT 也都只在内网可见。`db-init` 服务会自动创建只读数据库账号，不需要手工执行 SQL。
+默认生产部署只发布 `web` 的 `WEB_PORT`。`api` 只在 Docker 内网暴露 `8000`，TeslaMate 只在 Docker 内网暴露 `4000`，PostgreSQL 和 MQTT 也都只在内网可见。`database` 镜像内置首次启动恢复备份脚本，`db-init` 服务会自动创建只读数据库账号，不需要手工执行 SQL，也不需要在部署目录额外复制脚本文件。
 
 ## 功能
 
@@ -92,7 +92,6 @@ WEB_PORT=8080
 BASIC_AUTH_USER=admin
 BASIC_AUTH_PASSWORD=change-this-password
 
-POSTGRES_TAG=18-trixie
 MOSQUITTO_TAG=2
 TESLAMATE_TAG=latest
 TM_ENCRYPTION_KEY=replace-with-a-long-random-encryption-key
@@ -114,6 +113,14 @@ openssl rand -base64 48
 `TM_ENCRYPTION_KEY` 是 TeslaMate 加密密钥，生产环境创建后要妥善保管。`DASHBOARD_DB_USER` 会由 `db-init` 自动创建为只读账号；它只获得 `public` schema 的读权限，不会获得 `private` schema 权限。
 
 大陆机器部署前，先在 GitHub Actions 手工运行一次 `Build and Push Images`，把本项目镜像和运行依赖镜像都推送到阿里云镜像仓库。生产 `compose.yaml` 默认会从 `${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}` 拉取所有镜像，不再直接依赖 Docker Hub。
+
+生产部署目录最少只需要这些文件：
+
+- `compose.yaml`
+- `.env`
+- 可选的 TeslaMate 数据库备份文件，例如 `teslamate.bck`
+
+恢复备份和创建只读账号的脚本已经打进 `tesla-dashboard-postgres` 镜像，不需要额外复制 `deploy/` 目录。
 
 ### 2. 启动
 
@@ -159,6 +166,18 @@ http://部署机IP:8080
 
 如果备份里包含旧的 TeslaMate token，并且 `TM_ENCRYPTION_KEY` 也保持一致，那么恢复后通常可以直接继续使用，不需要重新额外配置授权 token。
 
+完整重建并重新导入备份：
+
+```bash
+sudo docker compose down -v --remove-orphans
+sudo docker compose pull
+sudo docker compose up -d database
+sudo docker compose logs -f database
+sudo docker compose up -d
+```
+
+`down -v` 会删除 PostgreSQL 持久化 volume。只有在确认同级目录里的备份文件可用时才执行这条命令。
+
 ## GitHub Actions 推送到阿里云镜像仓库
 
 工作流在 [.github/workflows/publish.yml](.github/workflows/publish.yml)。在 GitHub 仓库的 `Settings -> Secrets and variables -> Actions` 添加：
@@ -175,6 +194,7 @@ http://部署机IP:8080
 ```text
 registry.cn-shenzhen.aliyuncs.com/your-namespace/tesla-dashboard-api:<image_tag>
 registry.cn-shenzhen.aliyuncs.com/your-namespace/tesla-dashboard-web:<image_tag>
+registry.cn-shenzhen.aliyuncs.com/your-namespace/tesla-dashboard-postgres:<image_tag>
 registry.cn-shenzhen.aliyuncs.com/your-namespace/postgres:18-trixie
 registry.cn-shenzhen.aliyuncs.com/your-namespace/eclipse-mosquitto:2
 registry.cn-shenzhen.aliyuncs.com/your-namespace/teslamate:latest

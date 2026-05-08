@@ -1,0 +1,8 @@
+ARG POSTGRES_IMAGE=postgres:18-trixie
+FROM ${POSTGRES_IMAGE}
+
+COPY restore-backup-if-present.sh /docker-entrypoint-initdb.d/20-restore-backup-if-present.sh
+COPY create-dashboard-role.sh /usr/local/share/tesla-dashboard/create-dashboard-role.sh
+
+RUN chmod 0755 /docker-entrypoint-initdb.d/20-restore-backup-if-present.sh \
+  /usr/local/share/tesla-dashboard/create-dashboard-role.sh
