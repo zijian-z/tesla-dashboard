@@ -50,6 +50,7 @@ services:
       DATABASE_HOST: database
       MQTT_HOST: mosquitto
       CHECK_ORIGIN: "false"
+      URL_PATH: /
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
       - ./import:/opt/app/import
@@ -119,7 +120,7 @@ services:
       BASIC_AUTH_USER: ${BASIC_AUTH_USER:-admin}
       BASIC_AUTH_PASSWORD: ${BASIC_AUTH_PASSWORD}
     ports:
-      - "${WEB_PORT:-8080}:80"
+      - "${WEB_PORT:-80}:80"
     networks:
       - app
       - data

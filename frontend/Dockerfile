@@ -14,7 +14,7 @@ RUN apk add --no-cache openssl
 
 COPY nginx/default.conf /etc/nginx/conf.d/default.conf
 COPY nginx/10-basic-auth.sh /docker-entrypoint.d/10-basic-auth.sh
-COPY --from=build /app/dist /usr/share/nginx/html
+COPY --from=build /app/dist /usr/share/nginx/html/dashboard
 
 RUN chmod +x /docker-entrypoint.d/10-basic-auth.sh
 

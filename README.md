@@ -11,7 +11,7 @@
   v
 Nginx / Frontend  -- 内网 HTTP -->  FastAPI Backend  -- Docker 内网 -->  PostgreSQL
        |
-       └── 可选代理 /teslamate/ 到内网 TeslaMate 初始化页面
+       └── 根路径 / 反向代理到内网 TeslaMate
 
 TeslaMate Collector  -- 内网 --> PostgreSQL + MQTT
 ```
@@ -49,7 +49,7 @@ sudo docker compose -f compose.local.yaml up --build
 访问：
 
 ```text
-http://localhost:8080
+http://localhost:8080/dashboard/
 用户名：admin
 密码：change-me-local
 ```
@@ -88,7 +88,7 @@ IMAGE_REGISTRY=registry.cn-shenzhen.aliyuncs.com
 IMAGE_NAMESPACE=your-namespace
 IMAGE_TAG=latest
 
-WEB_PORT=8080
+WEB_PORT=80
 BASIC_AUTH_USER=admin
 BASIC_AUTH_PASSWORD=change-this-password
 
@@ -145,10 +145,10 @@ sudo docker compose up -d
 之后访问：
 
 ```text
-http://部署机IP:8080
+http://部署机IP/
 ```
 
-第一次启动后，先用同一个入口访问 `http://部署机IP:8080/teslamate/` 完成 TeslaMate 授权初始化；之后日常使用 `http://部署机IP:8080/` 查看本项目的报表界面。TeslaMate 没有发布独立宿主机端口，`/teslamate/` 也受同一组 Basic Auth 保护。
+第一次启动后，访问 `http://部署机IP/` 完成 TeslaMate 授权初始化；之后日常访问 `http://部署机IP/dashboard/` 查看本项目的报表界面。TeslaMate 没有发布独立宿主机端口，根路径 `/` 和 `/dashboard/` 都受同一组 Basic Auth 保护。
 
 只要外层还有反向代理或公网入口，把它转发到 `WEB_PORT` 即可；不需要额外暴露 TeslaMate、PostgreSQL 或 MQTT。
 
@@ -164,7 +164,7 @@ http://部署机IP:8080
 
 如果目录里有多个备份文件，脚本会按名称优先级取第一个匹配项。这个导入只在数据库卷首次初始化时执行一次；后续镜像更新、容器重启不会再次导入，也不会覆盖已有数据。若要重新导入，需要先删除对应的 PostgreSQL volume。
 
-恢复脚本会在备份导入完成后自动清空 `private.tokens`。如果备份来自旧版 TeslaMate，脚本也会兼容清空 `public.tokens`。这样历史行程、充电、位置等数据会保留，但不会继承备份里的旧 Tesla 授权；启动后访问 `http://部署机IP:8080/teslamate/` 重新完成授权即可。
+恢复脚本会在备份导入完成后自动清空 `private.tokens`。如果备份来自旧版 TeslaMate，脚本也会兼容清空 `public.tokens`。这样历史行程、充电、位置等数据会保留，但不会继承备份里的旧 Tesla 授权；启动后访问 `http://部署机IP/` 重新完成授权即可。
 
 完整重建并重新导入备份：
 

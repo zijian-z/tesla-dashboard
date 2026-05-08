@@ -205,7 +205,8 @@ type Dashboard = {
 
 type ReportKey = 'overview' | 'trends' | 'drives' | 'charging' | 'locations' | 'vehicle';
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? '';
+const defaultApiBase = import.meta.env.BASE_URL === '/' ? '' : import.meta.env.BASE_URL.replace(/\/$/, '');
+const API_BASE = import.meta.env.VITE_API_BASE ?? defaultApiBase;
 
 const ranges = [
   { label: '30天', value: 30 },
