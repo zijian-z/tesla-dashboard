@@ -1,6 +1,6 @@
 # TeslaMate Dashboard
 
-一个只读 TeslaMate 报表界面。它不依赖 TeslaMate 的 Web UI 或 Grafana，只读取 TeslaMate PostgreSQL 中 `public` schema 的行程、充电、位置、状态、升级等数据；Nginx 负责对外入口和 Basic Auth，后端与数据库都不暴露到宿主机端口。
+一个完整编排的 TeslaMate 采集 + 只读报表界面。TeslaMate 只负责采集车辆数据；报表由本项目的 FastAPI 后端和移动端优先的前端提供。Nginx 是唯一对外入口，负责 Basic Auth，API、TeslaMate、PostgreSQL、MQTT 都不直接暴露到宿主机公网端口。
 
 ## 架构
 
@@ -9,10 +9,14 @@
   |
   | Basic Auth
   v
-Nginx / Frontend  -- 内网 HTTP -->  FastAPI Backend  -- Docker 内网 -->  TeslaMate PostgreSQL
+Nginx / Frontend  -- 内网 HTTP -->  FastAPI Backend  -- Docker 内网 -->  PostgreSQL
+       |
+       └── 可选代理 /teslamate/ 到内网 TeslaMate 初始化页面
+
+TeslaMate Collector  -- 内网 --> PostgreSQL + MQTT
 ```
 
-默认生产部署只发布 `web` 的 `WEB_PORT`。`api` 只在 Docker 内网暴露 `8000`，TeslaMate、Grafana、PostgreSQL 不需要对外开放端口。
+默认生产部署只发布 `web` 的 `WEB_PORT`。`api` 只在 Docker 内网暴露 `8000`，TeslaMate 只在 Docker 内网暴露 `4000`，PostgreSQL 和 MQTT 也都只在内网可见。`db-init` 服务会自动创建只读数据库账号，不需要手工执行 SQL。
 
 ## 功能
 
@@ -57,37 +61,21 @@ sudo docker compose -f compose.local.yaml down -v
 sudo docker compose -f compose.local.yaml up --build
 ```
 
-## 生产部署
-
-### 1. 创建只读数据库用户
-
-在 TeslaMate 的 PostgreSQL 数据库里执行 [deploy/create-readonly-user.sql](deploy/create-readonly-user.sql)，先替换密码：
-
-```sql
-create user dashboard_readonly with password 'replace-with-a-strong-password';
-grant connect on database teslamate to dashboard_readonly;
-grant usage on schema public to dashboard_readonly;
-grant select on all tables in schema public to dashboard_readonly;
-grant select on all sequences in schema public to dashboard_readonly;
-alter default privileges for role teslamate in schema public
-  grant select on tables to dashboard_readonly;
-alter role dashboard_readonly set default_transaction_read_only = on;
-alter role dashboard_readonly set statement_timeout = '15s';
-```
-
-不要给 `private` schema 授权。这样后端无法读取 Tesla API token。
-
-### 2. 找到 TeslaMate Docker 网络
-
-在部署机上查看 TeslaMate 所在网络：
+如果你曾用旧版 `compose.local.yaml` 启动并看到 PostgreSQL 18 的 `/var/lib/postgresql/data (unused mount/volume)` 报错，先停止旧容器：
 
 ```bash
-sudo docker network ls | grep -i tesla
+sudo docker compose -f compose.local.yaml down
 ```
 
-常见值是 `teslamate_default`。`DATABASE_URL` 里的数据库 host 要使用该网络内 PostgreSQL 服务名，常见是 `database`。
+旧的失败 volume 名通常是 `tesla-dashboard-local_pgdata`。新版配置使用 `pgdata18`，不会再复用旧卷；确认不需要旧测试卷后可清理：
 
-### 3. 配置环境变量
+```bash
+sudo docker volume rm tesla-dashboard-local_pgdata
+```
+
+## 生产部署
+
+### 1. 配置环境变量
 
 ```bash
 cp .env.example .env
@@ -104,11 +92,26 @@ WEB_PORT=8080
 BASIC_AUTH_USER=admin
 BASIC_AUTH_PASSWORD=change-this-password
 
-TESLAMATE_DOCKER_NETWORK=teslamate_default
-DATABASE_URL=postgresql://dashboard_readonly:replace-with-a-strong-password@database:5432/teslamate
+TESLAMATE_TAG=latest
+TM_ENCRYPTION_KEY=replace-with-a-long-random-encryption-key
+TM_DB_USER=teslamate
+TM_DB_PASS=replace-with-a-strong-database-password
+TM_DB_NAME=teslamate
+TZ=Asia/Shanghai
+
+DASHBOARD_DB_USER=dashboard_readonly
+DASHBOARD_DB_PASSWORD=replace-with-a-different-strong-password
 ```
 
-### 4. 启动
+建议用下面的命令生成强随机值：
+
+```bash
+openssl rand -base64 48
+```
+
+`TM_ENCRYPTION_KEY` 是 TeslaMate 加密密钥，生产环境创建后要妥善保管。`DASHBOARD_DB_USER` 会由 `db-init` 自动创建为只读账号；它只获得 `public` schema 的读权限，不会获得 `private` schema 权限。
+
+### 2. 启动
 
 先确认部署机有 Docker Compose v2：
 
@@ -134,7 +137,9 @@ sudo docker compose up -d
 http://部署机IP:8080
 ```
 
-只要外层还有反向代理或公网入口，把它转发到 `WEB_PORT` 即可；不需要暴露 TeslaMate、Grafana 或 PostgreSQL。
+第一次启动后，先用同一个入口访问 `http://部署机IP:8080/teslamate/` 完成 TeslaMate 授权初始化；之后日常使用 `http://部署机IP:8080/` 查看本项目的报表界面。TeslaMate 没有发布独立宿主机端口，`/teslamate/` 也受同一组 Basic Auth 保护。
+
+只要外层还有反向代理或公网入口，把它转发到 `WEB_PORT` 即可；不需要额外暴露 TeslaMate、PostgreSQL 或 MQTT。
 
 ## GitHub Actions 推送到阿里云镜像仓库
 
@@ -147,16 +152,12 @@ http://部署机IP:8080
 | `ALIYUN_USERNAME` | 阿里云镜像仓库用户名 |
 | `ALIYUN_PASSWORD` | 阿里云镜像仓库密码或访问凭证 |
 
-推送到 `main` 时会构建并推送：
+这个 workflow 只支持手工触发。到 GitHub Actions 页面选择 `Build and Push Images`，点击 `Run workflow`，填写镜像 tag，默认是 `latest`。
 
 ```text
-registry.cn-shenzhen.aliyuncs.com/your-namespace/tesla-dashboard-api:<commit-sha>
-registry.cn-shenzhen.aliyuncs.com/your-namespace/tesla-dashboard-api:latest
-registry.cn-shenzhen.aliyuncs.com/your-namespace/tesla-dashboard-web:<commit-sha>
-registry.cn-shenzhen.aliyuncs.com/your-namespace/tesla-dashboard-web:latest
+registry.cn-shenzhen.aliyuncs.com/your-namespace/tesla-dashboard-api:<image_tag>
+registry.cn-shenzhen.aliyuncs.com/your-namespace/tesla-dashboard-web:<image_tag>
 ```
-
-推送 `v*` tag 时会额外使用 tag 名作为镜像 tag。
 
 ## 直接开发
 

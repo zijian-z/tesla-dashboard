@@ -1,17 +1,102 @@
 name: tesla-dashboard
 
 services:
+  database:
+    image: postgres:18-trixie
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${TM_DB_USER:-teslamate}
+      POSTGRES_PASSWORD: ${TM_DB_PASS}
+      POSTGRES_DB: ${TM_DB_NAME:-teslamate}
+    volumes:
+      - teslamate-db:/var/lib/postgresql
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TM_DB_USER:-teslamate} -d ${TM_DB_NAME:-teslamate}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    command: mosquitto -c /mosquitto-no-auth.conf
+    volumes:
+      - mosquitto-conf:/mosquitto/config
+      - mosquitto-data:/mosquitto/data
+    networks:
+      - data
+    security_opt:
+      - no-new-privileges:true
+
+  teslamate:
+    image: teslamate/teslamate:${TESLAMATE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      database:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    environment:
+      ENCRYPTION_KEY: ${TM_ENCRYPTION_KEY}
+      DATABASE_USER: ${TM_DB_USER:-teslamate}
+      DATABASE_PASS: ${TM_DB_PASS}
+      DATABASE_NAME: ${TM_DB_NAME:-teslamate}
+      DATABASE_HOST: database
+      MQTT_HOST: mosquitto
+      CHECK_ORIGIN: "false"
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ./import:/opt/app/import
+    expose:
+      - "4000"
+    networks:
+      - data
+    cap_drop:
+      - all
+
+  db-init:
+    image: postgres:18-trixie
+    restart: "no"
+    depends_on:
+      database:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: database
+      POSTGRES_USER: ${TM_DB_USER:-teslamate}
+      POSTGRES_PASSWORD: ${TM_DB_PASS}
+      POSTGRES_DB: ${TM_DB_NAME:-teslamate}
+      DASHBOARD_DB_USER: ${DASHBOARD_DB_USER:-dashboard_readonly}
+      DASHBOARD_DB_PASSWORD: ${DASHBOARD_DB_PASSWORD}
+    volumes:
+      - ./deploy/create-dashboard-role.sh:/scripts/create-dashboard-role.sh:ro
+    command: ["sh", "/scripts/create-dashboard-role.sh"]
+    networks:
+      - data
+    security_opt:
+      - no-new-privileges:true
+
   api:
     image: ${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}/tesla-dashboard-api:${IMAGE_TAG:-latest}
     restart: unless-stopped
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
     environment:
-      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_HOST: database
+      DATABASE_NAME: ${TM_DB_NAME:-teslamate}
+      DATABASE_USER: ${DASHBOARD_DB_USER:-dashboard_readonly}
+      DATABASE_PASSWORD: ${DASHBOARD_DB_PASSWORD}
       STATEMENT_TIMEOUT_MS: ${STATEMENT_TIMEOUT_MS:-15000}
       DB_POOL_MIN_SIZE: ${DB_POOL_MIN_SIZE:-1}
       DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE:-5}
     networks:
       - app
-      - teslamate
+      - data
     expose:
       - "8000"
     healthcheck:
@@ -29,6 +114,8 @@ services:
     depends_on:
       api:
         condition: service_started
+      teslamate:
+        condition: service_started
     environment:
       BASIC_AUTH_USER: ${BASIC_AUTH_USER:-admin}
       BASIC_AUTH_PASSWORD: ${BASIC_AUTH_PASSWORD}
@@ -36,6 +123,7 @@ services:
       - "${WEB_PORT:-8080}:80"
     networks:
       - app
+      - data
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/nginx-health >/dev/null 2>&1"]
       interval: 30s
@@ -46,6 +134,9 @@ services:
 
 networks:
   app:
-  teslamate:
-    external: true
-    name: ${TESLAMATE_DOCKER_NETWORK}
+  data:
+
+volumes:
+  teslamate-db:
+  mosquitto-conf:
+  mosquitto-data:

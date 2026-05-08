@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from functools import lru_cache
 
+from psycopg.conninfo import make_conninfo
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -27,14 +29,26 @@ def _csv_env(name: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in raw.split(",") if item.strip())
 
 
+def _database_conninfo() -> str:
+    database_url = os.getenv("DATABASE_URL")
+    if database_url:
+        return database_url
+
+    return make_conninfo(
+        "",
+        host=os.getenv("DATABASE_HOST", "database"),
+        port=os.getenv("DATABASE_PORT", "5432"),
+        dbname=os.getenv("DATABASE_NAME", "teslamate"),
+        user=os.getenv("DATABASE_USER", "dashboard_readonly"),
+        password=os.getenv("DATABASE_PASSWORD", ""),
+    )
+
+
 @lru_cache
 def get_settings() -> Settings:
     return Settings(
         app_name=os.getenv("APP_NAME", "TeslaMate Dashboard API"),
-        database_url=os.getenv(
-            "DATABASE_URL",
-            "postgresql://teslamate:teslamate@database:5432/teslamate",
-        ),
+        database_url=_database_conninfo(),
         statement_timeout_ms=_int_env("STATEMENT_TIMEOUT_MS", 15000),
         db_pool_min_size=_int_env("DB_POOL_MIN_SIZE", 1),
         db_pool_max_size=_int_env("DB_POOL_MAX_SIZE", 5),

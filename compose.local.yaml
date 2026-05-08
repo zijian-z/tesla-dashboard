@@ -9,7 +9,7 @@ services:
       POSTGRES_PASSWORD: teslamate
       POSTGRES_DB: teslamate
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata18:/var/lib/postgresql
       - ./teslamate.bck:/docker-entrypoint-initdb.d/10-teslamate.sql:ro
     networks:
       - data
@@ -55,4 +55,4 @@ networks:
   data:
 
 volumes:
-  pgdata:
+  pgdata18:
