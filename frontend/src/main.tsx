@@ -203,6 +203,8 @@ type Dashboard = {
   active_charge?: ChargeRecord | null;
 };
 
+type ReportKey = 'overview' | 'trends' | 'drives' | 'charging' | 'locations' | 'vehicle';
+
 const API_BASE = import.meta.env.VITE_API_BASE ?? '';
 
 const ranges = [
@@ -365,10 +367,22 @@ function Empty({ text }: { text: string }) {
   return <div className="empty">{text}</div>;
 }
 
+function ReportTitle({ title, description }: { title: string; description: string }) {
+  return (
+    <div className="report-title">
+      <div>
+        <h2>{title}</h2>
+        <p>{description}</p>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [cars, setCars] = React.useState<Car[]>([]);
   const [carId, setCarId] = React.useState<number | null>(null);
   const [range, setRange] = React.useState(30);
+  const [activeReport, setActiveReport] = React.useState<ReportKey>('overview');
   const [dashboard, setDashboard] = React.useState<Dashboard | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
@@ -454,11 +468,365 @@ function App() {
         })),
     [dashboard]
   );
+  const reportItems: Array<{ key: ReportKey; label: string; icon: React.ReactNode }> = [
+    { key: 'overview', label: '概览', icon: <Activity size={17} /> },
+    { key: 'trends', label: '趋势', icon: <ChartNoAxesColumn size={17} /> },
+    { key: 'drives', label: '行程', icon: <Navigation size={17} /> },
+    { key: 'charging', label: '充电', icon: <PlugZap size={17} /> },
+    { key: 'locations', label: '地点', icon: <MapPin size={17} /> },
+    { key: 'vehicle', label: '车辆', icon: <CarFront size={17} /> }
+  ];
+  const reportDescriptions: Record<ReportKey, string> = {
+    overview: '车辆当前状态与关键统计',
+    trends: '行驶、充电、电量与在线状态变化',
+    drives: '最近行程与行驶效率',
+    charging: '充电会话、功率和地点',
+    locations: '常到地点与充电地点',
+    vehicle: '车辆硬件、环境和软件信息'
+  };
+
+  const renderDailyTrend = () => (
+    <Section title="日趋势" icon={<ChartNoAxesColumn size={18} />} aside={dashboard?.data_window.since ? `${shortDate(dashboard.data_window.since)} 起` : '全部'}>
+      {daily.length ? (
+        <div className="chart chart-tall">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={daily} margin={{ top: 10, right: 10, bottom: 0, left: -18 }}>
+              <defs>
+                <linearGradient id="distanceFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#0f766e" stopOpacity={0.28} />
+                  <stop offset="95%" stopColor="#0f766e" stopOpacity={0.02} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="label" tickLine={false} axisLine={false} minTickGap={18} />
+              <YAxis tickLine={false} axisLine={false} width={42} />
+              <Tooltip formatter={(value, name) => [n(Number(value)), name === 'distance_km' ? '行驶 km' : '充电 kWh']} labelFormatter={(label) => `日期 ${label}`} />
+              <Area type="monotone" dataKey="distance_km" stroke="#0f766e" fill="url(#distanceFill)" strokeWidth={2} name="行驶 km" />
+              <Bar dataKey="charge_energy_added_kwh" fill="#d83a45" radius={[4, 4, 0, 0]} name="充电 kWh" />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      ) : (
+        <Empty text="当前周期没有行程或充电记录" />
+      )}
+    </Section>
+  );
+
+  const renderRangeTrend = () => (
+    <Section title="电量与续航" icon={<BatteryCharging size={18} />}>
+      {rangeSeries.length ? (
+        <div className="chart chart-tall">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={rangeSeries} margin={{ top: 10, right: 10, bottom: 0, left: -18 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="label" tickLine={false} axisLine={false} minTickGap={18} />
+              <YAxis yAxisId="left" tickLine={false} axisLine={false} width={36} domain={[0, 100]} />
+              <YAxis yAxisId="right" orientation="right" tickLine={false} axisLine={false} width={44} />
+              <Tooltip formatter={(value, name) => [n(Number(value)), name === 'battery_level' ? '电量 %' : '续航 km']} />
+              <Legend iconType="circle" />
+              <Line yAxisId="left" type="monotone" dataKey="battery_level" stroke="#d83a45" strokeWidth={2} dot={false} name="电量 %" />
+              <Line yAxisId="right" type="monotone" dataKey="rated_battery_range_km" stroke="#2563eb" strokeWidth={2} dot={false} name="额定续航 km" />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      ) : (
+        <Empty text="暂无电量记录" />
+      )}
+    </Section>
+  );
+
+  const renderStateChart = () => (
+    <Section title="状态占比" icon={<Moon size={18} />}>
+      {states.length ? (
+        <div className="state-block">
+          <div className="chart chart-pie">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie data={states} dataKey="value" nameKey="label" innerRadius={48} outerRadius={76} paddingAngle={2}>
+                  {states.map((entry) => (
+                    <Cell key={entry.state} fill={entry.fill} />
+                  ))}
+                </Pie>
+                <Tooltip formatter={(value) => [`${n(Number(value))} 小时`, '时长']} />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="state-list">
+            {states.map((item) => (
+              <div key={item.state}>
+                <span style={{ background: item.fill }} />
+                <strong>{item.label}</strong>
+                <em>{n(item.value)} 小时</em>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <Empty text="暂无状态记录" />
+      )}
+    </Section>
+  );
+
+  const renderMonthlyChart = () => (
+    <Section title="月汇总" icon={<CalendarDays size={18} />}>
+      {monthly.length ? (
+        <div className="chart chart-compact">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={monthly} margin={{ top: 10, right: 8, bottom: 0, left: -20 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="label" tickLine={false} axisLine={false} minTickGap={8} />
+              <YAxis tickLine={false} axisLine={false} width={40} />
+              <Tooltip formatter={(value, name) => [n(Number(value)), name === 'distance_km' ? '行驶 km' : '充电 kWh']} />
+              <Bar dataKey="distance_km" fill="#0f766e" radius={[4, 4, 0, 0]} name="行驶 km" />
+              <Bar dataKey="charge_energy_added_kwh" fill="#d83a45" radius={[4, 4, 0, 0]} name="充电 kWh" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      ) : (
+        <Empty text="暂无月度数据" />
+      )}
+    </Section>
+  );
+
+  const renderDriveList = () => (
+    <Section title="最近行程" icon={<Navigation size={18} />}>
+      {dashboard?.recent_drives.length ? (
+        <div className="record-list">
+          {dashboard.recent_drives.map((drive) => (
+            <article className="record" key={drive.id}>
+              <div className="record-time">
+                <Route size={16} />
+                <span>{dateTime(drive.start_date)}</span>
+              </div>
+              <h3>{drive.start_location ?? '未知地点'} → {drive.end_location ?? '未知地点'}</h3>
+              <div className="record-facts">
+                <span>{km(drive.distance_km)}</span>
+                <span>{minutes(drive.duration_min)}</span>
+                <span>{drive.speed_max ? `${n(drive.speed_max, 0)} km/h` : '—'}</span>
+                <span>{drive.estimated_kwh ? kwh(drive.estimated_kwh) : '—'}</span>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <Empty text="当前周期没有行程" />
+      )}
+    </Section>
+  );
+
+  const renderChargeList = () => (
+    <Section title="最近充电" icon={<PlugZap size={18} />}>
+      {dashboard?.recent_charges.length ? (
+        <div className="record-list">
+          {dashboard.recent_charges.map((charge) => (
+            <article className="record" key={charge.id}>
+              <div className="record-time">
+                <PlugZap size={16} />
+                <span>{dateTime(charge.start_date)}</span>
+                {!charge.end_date ? <b>进行中</b> : null}
+              </div>
+              <h3>{charge.location ?? '未知地点'}</h3>
+              <div className="record-facts">
+                <span>{kwh(charge.charge_energy_added_kwh)}</span>
+                <span>{percent(charge.start_battery_level)} → {percent(charge.end_battery_level)}</span>
+                <span>{minutes(charge.duration_min)}</span>
+                <span>{charge.max_power_kw ? `${n(charge.max_power_kw, 0)} kW` : '—'}</span>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <Empty text="当前周期没有充电" />
+      )}
+    </Section>
+  );
+
+  const renderLocationReports = () => (
+    <section className="split-grid">
+      <Section title="常到地点" icon={<MapPin size={18} />}>
+        {dashboard?.locations.destinations.length ? (
+          <div className="location-list">
+            {dashboard.locations.destinations.map((item) => (
+              <div className="location-row" key={`${item.location}-${item.last_seen_at}`}>
+                <strong>{item.location}</strong>
+                <span>{item.visits ?? 0} 次 · {km(item.arriving_distance_km)} · {dateTime(item.last_seen_at)}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <Empty text="暂无地点统计" />
+        )}
+      </Section>
+
+      <Section title="充电地点" icon={<Zap size={18} />}>
+        {dashboard?.locations.charging.length ? (
+          <div className="location-list">
+            {dashboard.locations.charging.map((item) => (
+              <div className="location-row" key={`${item.location}-${item.last_seen_at}`}>
+                <strong>{item.location}</strong>
+                <span>{item.sessions ?? 0} 次 · {kwh(item.charge_energy_added_kwh)} · {dateTime(item.last_seen_at)}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <Empty text="暂无充电地点统计" />
+        )}
+      </Section>
+    </section>
+  );
+
+  const renderVehicleMetrics = () => (
+    <section className="bottom-grid">
+      <Metric icon={<Thermometer size={20} />} label="车外温度" value={car?.outside_temp ? `${n(car.outside_temp)} °C` : '—'} detail={car?.inside_temp ? `车内 ${n(car.inside_temp)} °C` : undefined} />
+      <Metric
+        icon={<Gauge size={20} />}
+        label="胎压"
+        value={[car?.tpms_pressure_fl, car?.tpms_pressure_fr, car?.tpms_pressure_rl, car?.tpms_pressure_rr].some(Boolean) ? `${n(car?.tpms_pressure_fl)} / ${n(car?.tpms_pressure_fr)} bar` : '—'}
+        detail={[car?.tpms_pressure_rl, car?.tpms_pressure_rr].some(Boolean) ? `${n(car?.tpms_pressure_rl)} / ${n(car?.tpms_pressure_rr)} bar` : undefined}
+      />
+      <Metric icon={<Smartphone size={20} />} label="软件版本" value={car?.software_version ?? '—'} detail={dashboard?.updates[0] ? dateTime(dashboard.updates[0].start_date) : undefined} />
+      <Metric icon={<Clock3 size={20} />} label="数据窗口" value={dashboard?.data_window.days === 0 ? '全部' : `${dashboard?.data_window.days ?? range} 天`} detail={`${dateTime(dashboard?.data_window.first_seen_at)} 起`} />
+    </section>
+  );
+
+  const renderCurrentReport = () => {
+    if (activeReport === 'overview') {
+      return (
+        <>
+          <section className="status-band">
+            <div className="status-main">
+              <div className={`status-pill state-${car?.current_state ?? 'unknown'}`}>
+                <Activity size={16} />
+                {labelState(car?.current_state)}
+              </div>
+              <h2>{percent(car?.battery_level)}</h2>
+              <p>{km(car?.rated_battery_range_km)} 额定续航</p>
+            </div>
+            <div className="status-detail">
+              <div>
+                <span>里程表</span>
+                <strong>{km(car?.odometer)}</strong>
+              </div>
+              <div>
+                <span>位置</span>
+                <strong>{car?.location_label ?? '—'}</strong>
+              </div>
+              <div>
+                <span>更新</span>
+                <strong>{dateTime(car?.latest_seen_at)}</strong>
+              </div>
+            </div>
+          </section>
+
+          {dashboard?.active_charge ? (
+            <section className="active-charge">
+              <PlugZap size={18} />
+              <div>
+                <strong>正在充电</strong>
+                <span>{dashboard.active_charge.location ?? '未知地点'} · {kwh(dashboard.active_charge.charge_energy_added_kwh)}</span>
+              </div>
+            </section>
+          ) : null}
+
+          <section className="metrics-grid" aria-label="核心指标">
+            <Metric icon={<Route size={20} />} label="周期里程" value={km(summary.distance_km)} detail={`${summary.drive_count ?? 0} 次行程`} tone="green" />
+            <Metric icon={<PlugZap size={20} />} label="充电电量" value={kwh(summary.charge_energy_added_kwh)} detail={`${summary.charge_count ?? 0} 次充电`} tone="red" />
+            <Metric icon={<Zap size={20} />} label="估算能耗" value={summary.estimated_kwh_per_100km ? `${n(summary.estimated_kwh_per_100km)} kWh/100km` : '—'} detail={kwh(summary.estimated_drive_kwh)} tone="amber" />
+            <Metric icon={<Gauge size={20} />} label="最高车速" value={summary.max_speed_kmh ? `${n(summary.max_speed_kmh, 0)} km/h` : '—'} detail={minutes(summary.duration_min)} tone="blue" />
+            <Metric icon={<CalendarDays size={20} />} label="累计里程" value={km(lifetime.latest_odometer_km)} detail={`${integerFormat.format(lifetime.drive_count ?? 0)} 次记录行程`} />
+            <Metric icon={<CircleDollarSign size={20} />} label="充电费用" value={summary.cost ? currencyFormat.format(summary.cost) : '—'} detail={summary.avg_soc_added_pct ? `平均 +${n(summary.avg_soc_added_pct, 0)}%` : undefined} />
+          </section>
+        </>
+      );
+    }
+
+    if (activeReport === 'trends') {
+      return (
+        <>
+          {renderDailyTrend()}
+          <section className="split-grid">
+            {renderRangeTrend()}
+            {renderStateChart()}
+          </section>
+          {renderMonthlyChart()}
+        </>
+      );
+    }
+
+    if (activeReport === 'drives') {
+      return (
+        <>
+          <section className="metrics-grid metrics-grid-compact">
+            <Metric icon={<Route size={20} />} label="周期里程" value={km(summary.distance_km)} detail={`${summary.drive_count ?? 0} 次行程`} tone="green" />
+            <Metric icon={<Clock3 size={20} />} label="行驶时长" value={minutes(summary.duration_min)} detail={summary.avg_max_speed_kmh ? `平均最高 ${n(summary.avg_max_speed_kmh, 0)} km/h` : undefined} />
+            <Metric icon={<Zap size={20} />} label="估算能耗" value={summary.estimated_kwh_per_100km ? `${n(summary.estimated_kwh_per_100km)} kWh/100km` : '—'} detail={kwh(summary.estimated_drive_kwh)} tone="amber" />
+          </section>
+          {renderDriveList()}
+        </>
+      );
+    }
+
+    if (activeReport === 'charging') {
+      return (
+        <>
+          {dashboard?.active_charge ? (
+            <section className="active-charge">
+              <PlugZap size={18} />
+              <div>
+                <strong>正在充电</strong>
+                <span>{dashboard.active_charge.location ?? '未知地点'} · {kwh(dashboard.active_charge.charge_energy_added_kwh)}</span>
+              </div>
+            </section>
+          ) : null}
+          <section className="metrics-grid metrics-grid-compact">
+            <Metric icon={<PlugZap size={20} />} label="充电电量" value={kwh(summary.charge_energy_added_kwh)} detail={`${summary.charge_count ?? 0} 次充电`} tone="red" />
+            <Metric icon={<CircleDollarSign size={20} />} label="充电费用" value={summary.cost ? currencyFormat.format(summary.cost) : '—'} detail={summary.avg_soc_added_pct ? `平均 +${n(summary.avg_soc_added_pct, 0)}%` : undefined} />
+            <Metric icon={<BatteryCharging size={20} />} label="最高充至" value={percent(summary.max_end_battery_level)} detail={summary.active_charge_count ? `${summary.active_charge_count} 个会话进行中` : undefined} />
+          </section>
+          {renderChargeList()}
+        </>
+      );
+    }
+
+    if (activeReport === 'locations') {
+      return renderLocationReports();
+    }
+
+    return (
+      <>
+        <section className="status-band status-band-vehicle">
+          <div className="status-main">
+            <div className={`status-pill state-${car?.current_state ?? 'unknown'}`}>
+              <CarFront size={16} />
+              {carTitle(car)}
+            </div>
+            <h2>{km(car?.odometer)}</h2>
+            <p>{carSubtitle(car)}</p>
+          </div>
+          <div className="status-detail">
+            <div>
+              <span>当前位置</span>
+              <strong>{car?.location_label ?? '—'}</strong>
+            </div>
+            <div>
+              <span>软件版本</span>
+              <strong>{car?.software_version ?? '—'}</strong>
+            </div>
+            <div>
+              <span>最近更新</span>
+              <strong>{dateTime(car?.latest_seen_at)}</strong>
+            </div>
+          </div>
+        </section>
+        {renderVehicleMetrics()}
+      </>
+    );
+  };
 
   return (
-    <div className="app">
-      <header className="topbar">
-        <div className="brand">
+    <div className="app app-layout">
+      <aside className="sidebar">
+        <div className="brand sidebar-brand">
           <div className="brand-mark">
             <CarFront size={22} />
           </div>
@@ -468,7 +836,25 @@ function App() {
           </div>
         </div>
 
-        <div className="toolbar">
+        <div className="sidebar-status">
+          <div className={`status-pill state-${car?.current_state ?? 'unknown'}`}>
+            <Activity size={15} />
+            {labelState(car?.current_state)}
+          </div>
+          <strong>{percent(car?.battery_level)}</strong>
+          <span>{km(car?.rated_battery_range_km)} · {dateTime(car?.latest_seen_at)}</span>
+        </div>
+
+        <nav className="side-nav" aria-label="报表菜单">
+          {reportItems.map((item) => (
+            <button key={item.key} type="button" className={activeReport === item.key ? 'active' : ''} onClick={() => setActiveReport(item.key)}>
+              {item.icon}
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </nav>
+
+        <div className="sidebar-controls">
           <label className="select-wrap">
             <span>车辆</span>
             <select value={carId ?? ''} onChange={(event) => setCarId(Number(event.target.value))}>
@@ -479,283 +865,46 @@ function App() {
               ))}
             </select>
           </label>
-          <button className="icon-button" type="button" onClick={() => setRefreshKey((key) => key + 1)} title="刷新">
-            <RefreshCw size={18} className={refreshing ? 'spin' : ''} />
+
+          <span className="control-label">周期</span>
+          <div className="range-tabs" role="tablist" aria-label="统计周期">
+            {ranges.map((item) => (
+              <button type="button" role="tab" aria-selected={range === item.value} className={range === item.value ? 'active' : ''} key={item.value} onClick={() => setRange(item.value)}>
+                {item.label}
+              </button>
+            ))}
+          </div>
+
+          <button className="refresh-button" type="button" onClick={() => setRefreshKey((key) => key + 1)}>
+            <RefreshCw size={17} className={refreshing ? 'spin' : ''} />
+            刷新
           </button>
         </div>
+      </aside>
 
+      <div className="content-shell">
         <div className="range-tabs" role="tablist" aria-label="统计周期">
-          {ranges.map((item) => (
+          {reportItems.map((item) => (
             <button
               type="button"
               role="tab"
-              aria-selected={range === item.value}
-              className={range === item.value ? 'active' : ''}
-              key={item.value}
-              onClick={() => setRange(item.value)}
+              aria-selected={activeReport === item.key}
+              className={activeReport === item.key ? 'active' : ''}
+              key={item.key}
+              onClick={() => setActiveReport(item.key)}
             >
               {item.label}
             </button>
           ))}
         </div>
-      </header>
 
-      <main>
-        {error ? <div className="alert">{error}</div> : null}
+        <main>
+          <ReportTitle title={reportItems.find((item) => item.key === activeReport)?.label ?? '报表'} description={reportDescriptions[activeReport]} />
+          {error ? <div className="alert">{error}</div> : null}
 
-        {loading && !dashboard ? (
-          <div className="loading">加载中</div>
-        ) : (
-          <>
-            <section className="status-band">
-              <div className="status-main">
-                <div className={`status-pill state-${car?.current_state ?? 'unknown'}`}>
-                  <Activity size={16} />
-                  {labelState(car?.current_state)}
-                </div>
-                <h2>{percent(car?.battery_level)}</h2>
-                <p>{km(car?.rated_battery_range_km)} 额定续航</p>
-              </div>
-              <div className="status-detail">
-                <div>
-                  <span>里程表</span>
-                  <strong>{km(car?.odometer)}</strong>
-                </div>
-                <div>
-                  <span>位置</span>
-                  <strong>{car?.location_label ?? '—'}</strong>
-                </div>
-                <div>
-                  <span>更新</span>
-                  <strong>{dateTime(car?.latest_seen_at)}</strong>
-                </div>
-              </div>
-            </section>
-
-            {dashboard?.active_charge ? (
-              <section className="active-charge">
-                <PlugZap size={18} />
-                <div>
-                  <strong>正在充电</strong>
-                  <span>
-                    {dashboard.active_charge.location ?? '未知地点'} · {kwh(dashboard.active_charge.charge_energy_added_kwh)}
-                  </span>
-                </div>
-              </section>
-            ) : null}
-
-            <section className="metrics-grid" aria-label="核心指标">
-              <Metric icon={<Route size={20} />} label="周期里程" value={km(summary.distance_km)} detail={`${summary.drive_count ?? 0} 次行程`} tone="green" />
-              <Metric icon={<PlugZap size={20} />} label="充电电量" value={kwh(summary.charge_energy_added_kwh)} detail={`${summary.charge_count ?? 0} 次充电`} tone="red" />
-              <Metric
-                icon={<Zap size={20} />}
-                label="估算能耗"
-                value={summary.estimated_kwh_per_100km ? `${n(summary.estimated_kwh_per_100km)} kWh/100km` : '—'}
-                detail={kwh(summary.estimated_drive_kwh)}
-                tone="amber"
-              />
-              <Metric icon={<Gauge size={20} />} label="最高车速" value={summary.max_speed_kmh ? `${n(summary.max_speed_kmh, 0)} km/h` : '—'} detail={minutes(summary.duration_min)} tone="blue" />
-              <Metric icon={<CalendarDays size={20} />} label="累计里程" value={km(lifetime.latest_odometer_km)} detail={`${integerFormat.format(lifetime.drive_count ?? 0)} 次记录行程`} />
-              <Metric
-                icon={<CircleDollarSign size={20} />}
-                label="充电费用"
-                value={summary.cost ? currencyFormat.format(summary.cost) : '—'}
-                detail={summary.avg_soc_added_pct ? `平均 +${n(summary.avg_soc_added_pct, 0)}%` : undefined}
-              />
-            </section>
-
-            <Section title="日趋势" icon={<ChartNoAxesColumn size={18} />} aside={dashboard?.data_window.since ? `${shortDate(dashboard.data_window.since)} 起` : '全部'}>
-              {daily.length ? (
-                <div className="chart chart-tall">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={daily} margin={{ top: 10, right: 10, bottom: 0, left: -18 }}>
-                      <defs>
-                        <linearGradient id="distanceFill" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#0f766e" stopOpacity={0.28} />
-                          <stop offset="95%" stopColor="#0f766e" stopOpacity={0.02} />
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                      <XAxis dataKey="label" tickLine={false} axisLine={false} minTickGap={18} />
-                      <YAxis tickLine={false} axisLine={false} width={42} />
-                      <Tooltip formatter={(value, name) => [n(Number(value)), name === 'distance_km' ? '行驶 km' : '充电 kWh']} labelFormatter={(label) => `日期 ${label}`} />
-                      <Area type="monotone" dataKey="distance_km" stroke="#0f766e" fill="url(#distanceFill)" strokeWidth={2} name="行驶 km" />
-                      <Bar dataKey="charge_energy_added_kwh" fill="#d83a45" radius={[4, 4, 0, 0]} name="充电 kWh" />
-                    </AreaChart>
-                  </ResponsiveContainer>
-                </div>
-              ) : (
-                <Empty text="当前周期没有行程或充电记录" />
-              )}
-            </Section>
-
-            <Section title="电量与续航" icon={<BatteryCharging size={18} />}>
-              {rangeSeries.length ? (
-                <div className="chart chart-tall">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={rangeSeries} margin={{ top: 10, right: 10, bottom: 0, left: -18 }}>
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                      <XAxis dataKey="label" tickLine={false} axisLine={false} minTickGap={18} />
-                      <YAxis yAxisId="left" tickLine={false} axisLine={false} width={36} domain={[0, 100]} />
-                      <YAxis yAxisId="right" orientation="right" tickLine={false} axisLine={false} width={44} />
-                      <Tooltip formatter={(value, name) => [n(Number(value)), name === 'battery_level' ? '电量 %' : '续航 km']} />
-                      <Legend iconType="circle" />
-                      <Line yAxisId="left" type="monotone" dataKey="battery_level" stroke="#d83a45" strokeWidth={2} dot={false} name="电量 %" />
-                      <Line yAxisId="right" type="monotone" dataKey="rated_battery_range_km" stroke="#2563eb" strokeWidth={2} dot={false} name="额定续航 km" />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              ) : (
-                <Empty text="暂无电量记录" />
-              )}
-            </Section>
-
-            <section className="split-grid">
-              <Section title="状态占比" icon={<Moon size={18} />}>
-                {states.length ? (
-                  <div className="state-block">
-                    <div className="chart chart-pie">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                          <Pie data={states} dataKey="value" nameKey="label" innerRadius={48} outerRadius={76} paddingAngle={2}>
-                            {states.map((entry) => (
-                              <Cell key={entry.state} fill={entry.fill} />
-                            ))}
-                          </Pie>
-                          <Tooltip formatter={(value) => [`${n(Number(value))} 小时`, '时长']} />
-                        </PieChart>
-                      </ResponsiveContainer>
-                    </div>
-                    <div className="state-list">
-                      {states.map((item) => (
-                        <div key={item.state}>
-                          <span style={{ background: item.fill }} />
-                          <strong>{item.label}</strong>
-                          <em>{n(item.value)} 小时</em>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  <Empty text="暂无状态记录" />
-                )}
-              </Section>
-
-              <Section title="月汇总" icon={<CalendarDays size={18} />}>
-                {monthly.length ? (
-                  <div className="chart chart-compact">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={monthly} margin={{ top: 10, right: 8, bottom: 0, left: -20 }}>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                        <XAxis dataKey="label" tickLine={false} axisLine={false} minTickGap={8} />
-                        <YAxis tickLine={false} axisLine={false} width={40} />
-                        <Tooltip formatter={(value, name) => [n(Number(value)), name === 'distance_km' ? '行驶 km' : '充电 kWh']} />
-                        <Bar dataKey="distance_km" fill="#0f766e" radius={[4, 4, 0, 0]} name="行驶 km" />
-                        <Bar dataKey="charge_energy_added_kwh" fill="#d83a45" radius={[4, 4, 0, 0]} name="充电 kWh" />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                ) : (
-                  <Empty text="暂无月度数据" />
-                )}
-              </Section>
-            </section>
-
-            <Section title="最近行程" icon={<Navigation size={18} />}>
-              {dashboard?.recent_drives.length ? (
-                <div className="record-list">
-                  {dashboard.recent_drives.map((drive) => (
-                    <article className="record" key={drive.id}>
-                      <div className="record-time">
-                        <Route size={16} />
-                        <span>{dateTime(drive.start_date)}</span>
-                      </div>
-                      <h3>{drive.start_location ?? '未知地点'} → {drive.end_location ?? '未知地点'}</h3>
-                      <div className="record-facts">
-                        <span>{km(drive.distance_km)}</span>
-                        <span>{minutes(drive.duration_min)}</span>
-                        <span>{drive.speed_max ? `${n(drive.speed_max, 0)} km/h` : '—'}</span>
-                        <span>{drive.estimated_kwh ? kwh(drive.estimated_kwh) : '—'}</span>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              ) : (
-                <Empty text="当前周期没有行程" />
-              )}
-            </Section>
-
-            <Section title="最近充电" icon={<PlugZap size={18} />}>
-              {dashboard?.recent_charges.length ? (
-                <div className="record-list">
-                  {dashboard.recent_charges.map((charge) => (
-                    <article className="record" key={charge.id}>
-                      <div className="record-time">
-                        <PlugZap size={16} />
-                        <span>{dateTime(charge.start_date)}</span>
-                        {!charge.end_date ? <b>进行中</b> : null}
-                      </div>
-                      <h3>{charge.location ?? '未知地点'}</h3>
-                      <div className="record-facts">
-                        <span>{kwh(charge.charge_energy_added_kwh)}</span>
-                        <span>{percent(charge.start_battery_level)} → {percent(charge.end_battery_level)}</span>
-                        <span>{minutes(charge.duration_min)}</span>
-                        <span>{charge.max_power_kw ? `${n(charge.max_power_kw, 0)} kW` : '—'}</span>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              ) : (
-                <Empty text="当前周期没有充电" />
-              )}
-            </Section>
-
-            <section className="split-grid">
-              <Section title="常到地点" icon={<MapPin size={18} />}>
-                {dashboard?.locations.destinations.length ? (
-                  <div className="location-list">
-                    {dashboard.locations.destinations.map((item) => (
-                      <div className="location-row" key={`${item.location}-${item.last_seen_at}`}>
-                        <strong>{item.location}</strong>
-                        <span>{item.visits ?? 0} 次 · {km(item.arriving_distance_km)} · {dateTime(item.last_seen_at)}</span>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <Empty text="暂无地点统计" />
-                )}
-              </Section>
-
-              <Section title="充电地点" icon={<Zap size={18} />}>
-                {dashboard?.locations.charging.length ? (
-                  <div className="location-list">
-                    {dashboard.locations.charging.map((item) => (
-                      <div className="location-row" key={`${item.location}-${item.last_seen_at}`}>
-                        <strong>{item.location}</strong>
-                        <span>{item.sessions ?? 0} 次 · {kwh(item.charge_energy_added_kwh)} · {dateTime(item.last_seen_at)}</span>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <Empty text="暂无充电地点统计" />
-                )}
-              </Section>
-            </section>
-
-            <section className="bottom-grid">
-              <Metric icon={<Thermometer size={20} />} label="车外温度" value={car?.outside_temp ? `${n(car.outside_temp)} °C` : '—'} detail={car?.inside_temp ? `车内 ${n(car.inside_temp)} °C` : undefined} />
-              <Metric
-                icon={<Gauge size={20} />}
-                label="胎压"
-                value={[car?.tpms_pressure_fl, car?.tpms_pressure_fr, car?.tpms_pressure_rl, car?.tpms_pressure_rr].some(Boolean) ? `${n(car?.tpms_pressure_fl)} / ${n(car?.tpms_pressure_fr)} bar` : '—'}
-                detail={[car?.tpms_pressure_rl, car?.tpms_pressure_rr].some(Boolean) ? `${n(car?.tpms_pressure_rl)} / ${n(car?.tpms_pressure_rr)} bar` : undefined}
-              />
-              <Metric icon={<Smartphone size={20} />} label="软件版本" value={car?.software_version ?? '—'} detail={dashboard?.updates[0] ? dateTime(dashboard.updates[0].start_date) : undefined} />
-              <Metric icon={<Clock3 size={20} />} label="数据窗口" value={dashboard?.data_window.days === 0 ? '全部' : `${dashboard?.data_window.days ?? range} 天`} detail={`${dateTime(dashboard?.data_window.first_seen_at)} 起`} />
-            </section>
-          </>
-        )}
-      </main>
+          {loading && !dashboard ? <div className="loading">加载中</div> : renderCurrentReport()}
+        </main>
+      </div>
     </div>
   );
 }

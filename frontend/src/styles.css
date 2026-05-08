@@ -697,3 +697,242 @@ main {
     text-align: center;
   }
 }
+
+.app-layout {
+  display: grid;
+  grid-template-columns: 292px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  height: 100vh;
+  padding: 18px;
+  border-right: 1px solid rgba(32, 33, 36, 0.08);
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(18px);
+}
+
+.sidebar-brand {
+  flex: 0 0 auto;
+}
+
+.sidebar-status {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid rgba(32, 33, 36, 0.08);
+  border-radius: 8px;
+  color: #ffffff;
+  background:
+    linear-gradient(135deg, rgba(216, 58, 69, 0.92), rgba(32, 33, 36, 0.94)),
+    #202124;
+}
+
+.sidebar-status .status-pill {
+  width: fit-content;
+}
+
+.sidebar-status strong {
+  color: #ffffff;
+  font-size: 34px;
+  line-height: 1;
+}
+
+.sidebar-status span {
+  display: block;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.74);
+  font-size: 12px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-nav {
+  display: grid;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid rgba(32, 33, 36, 0.08);
+  border-radius: 8px;
+  background: #f3f4f1;
+}
+
+.side-nav button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 40px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 7px;
+  color: #4f5558;
+  background: transparent;
+  font-weight: 700;
+  text-align: left;
+}
+
+.side-nav button.active {
+  color: #ffffff;
+  background: #202124;
+  box-shadow: 0 8px 18px rgba(32, 33, 36, 0.14);
+}
+
+.sidebar-controls {
+  display: grid;
+  gap: 10px;
+  margin-top: auto;
+}
+
+.sidebar-controls .select-wrap select {
+  width: 100%;
+  max-width: none;
+}
+
+.control-label {
+  color: #6a6f72;
+  font-size: 11px;
+}
+
+.sidebar-controls .range-tabs {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.refresh-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  border: 1px solid rgba(32, 33, 36, 0.12);
+  border-radius: 8px;
+  color: #202124;
+  background: #ffffff;
+  font-weight: 700;
+}
+
+.content-shell {
+  min-width: 0;
+}
+
+.content-shell > .range-tabs {
+  display: none;
+}
+
+.report-title {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.report-title h2 {
+  margin: 0;
+  color: #202124;
+  font-size: 24px;
+  line-height: 1.15;
+}
+
+.report-title p {
+  margin: 5px 0 0;
+  color: #6a6f72;
+  font-size: 13px;
+}
+
+.metrics-grid-compact {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.status-band-vehicle .status-main h2 {
+  font-size: 34px;
+}
+
+@media (max-width: 1100px) {
+  .app-layout {
+    grid-template-columns: 256px minmax(0, 1fr);
+  }
+
+  .metrics-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 820px) {
+  .app-layout {
+    display: block;
+  }
+
+  .sidebar {
+    position: relative;
+    height: auto;
+    padding: 12px;
+    border-right: 0;
+    border-bottom: 1px solid rgba(32, 33, 36, 0.08);
+  }
+
+  .sidebar-status {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+  }
+
+  .sidebar-status strong {
+    font-size: 28px;
+    justify-self: end;
+  }
+
+  .sidebar-status span {
+    grid-column: 1 / -1;
+  }
+
+  .side-nav {
+    display: none;
+  }
+
+  .sidebar-controls {
+    margin-top: 0;
+  }
+
+  .content-shell > .range-tabs {
+    position: sticky;
+    top: 0;
+    z-index: 18;
+    display: grid;
+    grid-template-columns: repeat(6, max-content);
+    gap: 6px;
+    overflow-x: auto;
+    margin: 0;
+    padding: 8px 12px;
+    border-right: 0;
+    border-left: 0;
+    border-radius: 0;
+    background: rgba(246, 247, 244, 0.94);
+    backdrop-filter: blur(16px);
+  }
+
+  .content-shell > .range-tabs button {
+    min-width: 64px;
+    padding: 0 12px;
+  }
+
+  .report-title {
+    margin-top: 2px;
+  }
+
+  .report-title h2 {
+    font-size: 21px;
+  }
+
+  .metrics-grid,
+  .metrics-grid-compact,
+  .bottom-grid,
+  .split-grid {
+    grid-template-columns: 1fr;
+  }
+}
