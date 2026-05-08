@@ -141,6 +141,20 @@ http://部署机IP:8080
 
 只要外层还有反向代理或公网入口，把它转发到 `WEB_PORT` 即可；不需要额外暴露 TeslaMate、PostgreSQL 或 MQTT。
 
+### 3. 直接导入同级目录备份
+
+如果 `compose.yaml` 同级目录里存在数据库备份文件，`database` 服务在第一次创建新的 PostgreSQL 卷时会自动导入。支持的文件名优先级包括：
+
+- `teslamate.bck`
+- `teslamate.sql`
+- `teslamate.dump`
+- `teslamate.backup`
+- 以及这些后缀的 `.gz` 版本
+
+如果目录里有多个备份文件，脚本会按名称优先级取第一个匹配项。这个导入只在数据库卷首次初始化时执行一次；后续镜像更新、容器重启不会再次导入，也不会覆盖已有数据。若要重新导入，需要先删除对应的 PostgreSQL volume。
+
+如果备份里包含旧的 TeslaMate token，并且 `TM_ENCRYPTION_KEY` 也保持一致，那么恢复后通常可以直接继续使用，不需要重新额外配置授权 token。
+
 ## GitHub Actions 推送到阿里云镜像仓库
 
 工作流在 [.github/workflows/publish.yml](.github/workflows/publish.yml)。在 GitHub 仓库的 `Settings -> Secrets and variables -> Actions` 添加：
