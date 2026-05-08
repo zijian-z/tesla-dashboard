@@ -1,0 +1,58 @@
+name: tesla-dashboard-local
+
+services:
+  db:
+    image: postgres:18-trixie
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: teslamate
+      POSTGRES_PASSWORD: teslamate
+      POSTGRES_DB: teslamate
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./teslamate.bck:/docker-entrypoint-initdb.d/10-teslamate.sql:ro
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U teslamate -d teslamate"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://teslamate:teslamate@db:5432/teslamate
+      STATEMENT_TIMEOUT_MS: 15000
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "8000"
+    networks:
+      - app
+      - data
+
+  web:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    environment:
+      BASIC_AUTH_USER: admin
+      BASIC_AUTH_PASSWORD: change-me-local
+    depends_on:
+      api:
+        condition: service_started
+    ports:
+      - "8080:80"
+    networks:
+      - app
+
+networks:
+  app:
+  data:
+
+volumes:
+  pgdata:
