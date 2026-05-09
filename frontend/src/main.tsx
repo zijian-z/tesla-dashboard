@@ -1,5 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import type { LatLngBoundsExpression, LatLngExpression } from 'leaflet';
+import { CircleMarker, MapContainer, Polyline, TileLayer, useMap } from 'react-leaflet';
 import {
   Activity,
   BatteryCharging,
@@ -37,6 +39,7 @@ import {
   XAxis,
   YAxis
 } from 'recharts';
+import 'leaflet/dist/leaflet.css';
 import './styles.css';
 
 type Car = {
@@ -154,6 +157,25 @@ type RangePoint = {
   odometer?: number | null;
 };
 
+type RoutePoint = {
+  sampled_at?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  speed?: number | null;
+  power?: number | null;
+  battery_level?: number | null;
+};
+
+type ChargeSample = {
+  sampled_at?: string | null;
+  minute?: number | null;
+  charger_power_kw?: number | null;
+  battery_level?: number | null;
+  charge_energy_added_kwh?: number | null;
+  charger_voltage?: number | null;
+  charger_actual_current?: number | null;
+};
+
 type DriveRecord = {
   id: number;
   start_date: string;
@@ -168,6 +190,7 @@ type DriveRecord = {
   end_location?: string | null;
   estimated_kwh?: number | null;
   estimated_kwh_per_100km?: number | null;
+  route_points?: RoutePoint[];
 };
 
 type ChargeRecord = {
@@ -186,6 +209,7 @@ type ChargeRecord = {
   avg_power_kw?: number | null;
   fast_charger?: boolean | null;
   is_active?: boolean | null;
+  samples?: ChargeSample[];
 };
 
 type LocationRecord = {
@@ -465,6 +489,102 @@ function ReportTitle({ title, description }: { title: string; description: strin
   );
 }
 
+function RouteMap({ points, label }: { points?: RoutePoint[]; label: string }) {
+  const positions = React.useMemo<LatLngExpression[]>(
+    () =>
+      (points ?? [])
+        .filter((point) => typeof point.latitude === 'number' && typeof point.longitude === 'number')
+        .map((point) => [point.latitude as number, point.longitude as number]),
+    [points]
+  );
+
+  if (!positions.length) {
+    return <div className="route-map-empty">暂无轨迹点</div>;
+  }
+
+  const first = positions[0];
+  const last = positions[positions.length - 1];
+
+  return (
+    <div className="route-map-wrap" aria-label={`${label} 地图轨迹`}>
+      <MapContainer className="route-map" center={first} zoom={14} scrollWheelZoom={false} zoomControl={false} attributionControl={false}>
+        <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+        <FitRoute positions={positions} />
+        <Polyline positions={positions} pathOptions={{ color: '#3e6ae1', weight: 4, opacity: 0.88 }} />
+        <CircleMarker center={first} radius={5} pathOptions={{ color: '#ffffff', fillColor: '#2f7d32', fillOpacity: 1, weight: 2 }} />
+        <CircleMarker center={last} radius={5} pathOptions={{ color: '#ffffff', fillColor: '#171a20', fillOpacity: 1, weight: 2 }} />
+      </MapContainer>
+    </div>
+  );
+}
+
+function FitRoute({ positions }: { positions: LatLngExpression[] }) {
+  const map = useMap();
+
+  React.useEffect(() => {
+    const timer = window.setTimeout(() => {
+      map.invalidateSize();
+      if (positions.length === 1) {
+        map.setView(positions[0], 15, { animate: false });
+      } else {
+        map.fitBounds(positions as LatLngBoundsExpression, {
+          animate: false,
+          maxZoom: 16,
+          padding: [18, 18]
+        });
+      }
+    }, 80);
+
+    return () => window.clearTimeout(timer);
+  }, [map, positions]);
+
+  return null;
+}
+
+function ChargePowerChart({ charge }: { charge: ChargeRecord }) {
+  const data = React.useMemo(
+    () =>
+      (charge.samples ?? [])
+        .filter((sample) => typeof sample.minute === 'number')
+        .map((sample) => ({
+          ...sample,
+          minute_label: n(sample.minute, 0),
+          minute: sample.minute ?? 0,
+          charger_power_kw: sample.charger_power_kw ?? null,
+          battery_level: sample.battery_level ?? null,
+          charge_energy_added_kwh: sample.charge_energy_added_kwh ?? null
+        })),
+    [charge.samples]
+  );
+
+  if (data.length < 2) {
+    return <div className="session-chart-empty">暂无功率采样</div>;
+  }
+
+  return (
+    <div className="session-chart" aria-label="充电功率曲线">
+      <ResponsiveContainer width="100%" height="100%">
+        <ComposedChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: -24 }}>
+          <CartesianGrid strokeDasharray="3 3" vertical={false} />
+          <XAxis dataKey="minute_label" tickLine={false} axisLine={false} minTickGap={18} />
+          <YAxis yAxisId="left" tickLine={false} axisLine={false} width={34} />
+          <YAxis yAxisId="right" orientation="right" tickLine={false} axisLine={false} width={34} domain={[0, 100]} />
+          <Tooltip
+            formatter={(value, name) => {
+              if (name === 'charger_power_kw') return [`${n(Number(value), 0)} kW`, '功率'];
+              if (name === 'battery_level') return [`${n(Number(value), 0)}%`, '电量'];
+              return [kwh(Number(value)), '已充'];
+            }}
+            labelFormatter={(label) => `${label} 分钟`}
+          />
+          <Bar yAxisId="left" dataKey="charger_power_kw" fill="#8da2fb" radius={[3, 3, 0, 0]} name="charger_power_kw" />
+          <Line yAxisId="right" type="monotone" dataKey="battery_level" stroke="#171a20" strokeWidth={2} dot={false} name="battery_level" />
+        </ComposedChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
 function App() {
   const [cars, setCars] = React.useState<Car[]>([]);
   const [carId, setCarId] = React.useState<number | null>(null);
@@ -662,7 +782,12 @@ function App() {
               <XAxis dataKey="label" tickLine={false} axisLine={false} minTickGap={18} />
               <YAxis yAxisId="left" tickLine={false} axisLine={false} width={36} domain={[0, 100]} />
               <YAxis yAxisId="right" orientation="right" tickLine={false} axisLine={false} width={44} />
-              <Tooltip formatter={(value, name) => [n(Number(value)), name === 'battery_level' ? '电量 %' : '续航 km']} />
+              <Tooltip
+                formatter={(value, name) => {
+                  if (name === '电量 %') return [percent(Number(value)), '电量'];
+                  return [km(Number(value)), '额定续航'];
+                }}
+              />
               <Legend iconType="circle" />
               <Line yAxisId="left" type="monotone" dataKey="battery_level" stroke="#d83a45" strokeWidth={2} dot={false} name="电量 %" />
               <Line yAxisId="right" type="monotone" dataKey="rated_battery_range_km" stroke="#2563eb" strokeWidth={2} dot={false} name="额定续航 km" />
@@ -792,6 +917,7 @@ function App() {
                 <span>{drive.estimated_kwh ? kwh(drive.estimated_kwh) : '—'}</span>
                 <span>{drive.estimated_kwh_per_100km ? `${n(drive.estimated_kwh_per_100km)} kWh/100km` : '—'}</span>
               </div>
+              <RouteMap points={drive.route_points} label={`${drive.start_location ?? '未知地点'} 到 ${drive.end_location ?? '未知地点'}`} />
             </article>
           ))}
         </div>
@@ -819,6 +945,7 @@ function App() {
                 <span>{minutes(charge.duration_min)}</span>
                 <span>{charge.max_power_kw ? `${n(charge.max_power_kw, 0)} kW` : '—'}</span>
               </div>
+              <ChargePowerChart charge={charge} />
             </article>
           ))}
         </div>

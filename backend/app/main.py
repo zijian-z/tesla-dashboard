@@ -636,13 +636,50 @@ def dashboard(
                  and c.efficiency is not null
                 then (((d.start_rated_range_km - d.end_rated_range_km) * c.efficiency) / d.distance * 100)::float8
                 else null
-            end as estimated_kwh_per_100km
+            end as estimated_kwh_per_100km,
+            coalesce(route.route_points, '[]'::jsonb) as route_points
         from public.drives d
         join public.cars c on c.id = d.car_id
         left join public.addresses sa on sa.id = d.start_address_id
         left join public.addresses ea on ea.id = d.end_address_id
         left join public.geofences sg on sg.id = d.start_geofence_id
         left join public.geofences eg on eg.id = d.end_geofence_id
+        left join lateral (
+            select jsonb_agg(
+                jsonb_build_object(
+                    'sampled_at', sampled.date,
+                    'latitude', sampled.latitude::float8,
+                    'longitude', sampled.longitude::float8,
+                    'speed', sampled.speed,
+                    'power', sampled.power,
+                    'battery_level', sampled.battery_level
+                )
+                order by sampled.date
+            ) as route_points
+            from (
+                select date, latitude, longitude, speed, power, battery_level
+                from (
+                    select
+                        p.date,
+                        p.latitude,
+                        p.longitude,
+                        p.speed,
+                        p.power,
+                        p.battery_level,
+                        (row_number() over (order by p.date))::int as rn,
+                        (count(*) over ())::int as total
+                    from public.positions p
+                    where p.drive_id = d.id
+                      and p.latitude is not null
+                      and p.longitude is not null
+                ) ranked
+                where total <= 160
+                   or rn = 1
+                   or rn = total
+                   or ((rn - 1) %% greatest(1, ceil(total / 160.0)::int)) = 0
+                order by date
+            ) sampled
+        ) route on true
         where d.car_id = %s
           and (%s::timestamp is null or d.start_date >= %s::timestamp)
           and d.start_date <= %s::timestamp
@@ -724,7 +761,8 @@ def dashboard(
             ch.latest_charge_at,
             ch.max_power_kw,
             ch.fast_charger,
-            ({active_charge_condition()})::bool as is_active
+            ({active_charge_condition()})::bool as is_active,
+            coalesce(charge_samples.samples, '[]'::jsonb) as samples
         from public.charging_processes cp
         left join public.addresses a on a.id = cp.address_id
         left join public.geofences g on g.id = cp.geofence_id
@@ -745,6 +783,47 @@ def dashboard(
             order by date desc
             limit 1
         ) latest on true
+        left join lateral (
+            select jsonb_agg(
+                jsonb_build_object(
+                    'sampled_at', sampled.date,
+                    'minute', extract(epoch from (sampled.date - cp.start_date)) / 60.0,
+                    'charger_power_kw', sampled.charger_power,
+                    'battery_level', sampled.battery_level,
+                    'charge_energy_added_kwh', sampled.charge_energy_added::float8,
+                    'charger_voltage', sampled.charger_voltage,
+                    'charger_actual_current', sampled.charger_actual_current
+                )
+                order by sampled.date
+            ) as samples
+            from (
+                select
+                    date,
+                    charger_power,
+                    battery_level,
+                    charge_energy_added,
+                    charger_voltage,
+                    charger_actual_current
+                from (
+                    select
+                        c.date,
+                        c.charger_power,
+                        c.battery_level,
+                        c.charge_energy_added,
+                        c.charger_voltage,
+                        c.charger_actual_current,
+                        (row_number() over (order by c.date))::int as rn,
+                        (count(*) over ())::int as total
+                    from public.charges c
+                    where c.charging_process_id = cp.id
+                ) ranked
+                where total <= 160
+                   or rn = 1
+                   or rn = total
+                   or ((rn - 1) %% greatest(1, ceil(total / 160.0)::int)) = 0
+                order by date
+            ) sampled
+        ) charge_samples on true
         left join lateral (
             select date as latest_seen_at
             from public.positions

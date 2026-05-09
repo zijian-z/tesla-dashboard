@@ -108,6 +108,23 @@ sudo docker compose up -d
 
 `WEB_PORT` 默认是 `80`。如果机器前面还有负载均衡或网关，建议让它直接转发到宿主机 `80`，不要额外发布 TeslaMate、API、PostgreSQL 或 MQTT 端口。
 
+### 3. 只更新 dashboard
+
+如果改动只涉及后端 API 或前端页面，不需要重建数据库、TeslaMate 或 MQTT。生产环境拉取新镜像后只重启 `api` 和 `web`：
+
+```bash
+sudo docker compose pull api web
+sudo docker compose up -d --no-deps api web
+```
+
+本地源码验证时同样可以只重建这两个服务：
+
+```bash
+sudo docker compose -f compose.local.yaml up -d --build --no-deps api web
+```
+
+只有修改了 `database` 镜像、恢复脚本、TeslaMate、MQTT 或需要重新导入备份时，才需要处理对应服务或数据库 volume。
+
 ## 导入备份
 
 把备份文件放在 `compose.yaml` 同级目录，数据库 volume 首次创建时会自动导入。优先识别这些文件名：
