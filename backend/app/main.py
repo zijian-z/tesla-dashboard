@@ -59,6 +59,32 @@ def active_charge_condition(
     """
 
 
+MIN_REPORT_CHARGE_KWH = 0.5
+
+
+def report_charge_condition(cp_alias: str = "cp", latest_alias: str | None = None) -> str:
+    energy = (
+        f"coalesce({cp_alias}.charge_energy_added::float8, {latest_alias}.charge_energy_added_kwh, 0)"
+        if latest_alias
+        else f"coalesce({cp_alias}.charge_energy_added::float8, 0)"
+    )
+    end_battery_level = (
+        f"coalesce({cp_alias}.end_battery_level, {latest_alias}.battery_level)"
+        if latest_alias
+        else f"{cp_alias}.end_battery_level"
+    )
+    return f"""
+        (
+            {energy} >= {MIN_REPORT_CHARGE_KWH}
+            or (
+                {cp_alias}.start_battery_level is not null
+                and {end_battery_level} is not null
+                and ({end_battery_level} - {cp_alias}.start_battery_level) >= 1
+            )
+        )
+    """
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_pool()
@@ -214,7 +240,7 @@ def cars() -> Any:
 @app.get("/api/cars/{car_id}/dashboard")
 def dashboard(
     car_id: int,
-    days: int = Query(default=30, ge=0, le=3650, description="0 表示全部数据"),
+    days: int = Query(default=7, ge=0, le=3650, description="0 表示全部数据"),
     start: date | None = Query(default=None, description="自定义开始日期，格式 YYYY-MM-DD"),
     end: date | None = Query(default=None, description="自定义结束日期，格式 YYYY-MM-DD"),
 ) -> Any:
@@ -285,7 +311,7 @@ def dashboard(
     )
 
     charge_stats = fetch_one(
-        """
+        f"""
         select
             count(*)::int as charge_count,
             coalesce(sum(cp.charge_energy_added), 0)::float8 as charge_energy_added_kwh,
@@ -315,6 +341,7 @@ def dashboard(
         where cp.car_id = %s
           and (%s::timestamp is null or cp.start_date >= %s::timestamp)
           and cp.start_date <= %s::timestamp
+          and {report_charge_condition()}
         """,
         (car_id, since, since, until),
     )
@@ -344,12 +371,12 @@ def dashboard(
     )
 
     lifetime = fetch_one(
-        """
+        f"""
         select
             (select count(*)::int from public.drives where car_id = %s) as drive_count,
             (select coalesce(sum(distance), 0)::float8 from public.drives where car_id = %s) as distance_km,
-            (select count(*)::int from public.charging_processes where car_id = %s) as charge_count,
-            (select coalesce(sum(charge_energy_added), 0)::float8 from public.charging_processes where car_id = %s) as charge_energy_added_kwh,
+            (select count(*)::int from public.charging_processes cp where cp.car_id = %s and {report_charge_condition()}) as charge_count,
+            (select coalesce(sum(cp.charge_energy_added), 0)::float8 from public.charging_processes cp where cp.car_id = %s and {report_charge_condition()}) as charge_energy_added_kwh,
             (select min(odometer)::float8 from public.positions where car_id = %s and odometer is not null) as first_odometer_km,
             (select max(odometer)::float8 from public.positions where car_id = %s and odometer is not null) as latest_odometer_km
         """,
@@ -357,7 +384,7 @@ def dashboard(
     )
 
     daily = fetch_all(
-        """
+        f"""
         with drive_days as (
             select
                 date_trunc('day', d.start_date)::date as day,
@@ -385,14 +412,15 @@ def dashboard(
         ),
         charge_days as (
             select
-                date_trunc('day', start_date)::date as day,
+                date_trunc('day', cp.start_date)::date as day,
                 count(*)::int as charges,
-                coalesce(sum(charge_energy_added), 0)::float8 as charge_energy_added_kwh,
-                coalesce(sum(cost), 0)::float8 as cost
-            from public.charging_processes
-            where car_id = %s
-              and (%s::timestamp is null or start_date >= %s::timestamp)
-              and start_date <= %s::timestamp
+                coalesce(sum(cp.charge_energy_added), 0)::float8 as charge_energy_added_kwh,
+                coalesce(sum(cp.cost), 0)::float8 as cost
+            from public.charging_processes cp
+            where cp.car_id = %s
+              and (%s::timestamp is null or cp.start_date >= %s::timestamp)
+              and cp.start_date <= %s::timestamp
+              and {report_charge_condition()}
             group by 1
         )
         select
@@ -418,7 +446,7 @@ def dashboard(
     )
 
     monthly = fetch_all(
-        """
+        f"""
         with drive_months as (
             select
                 date_trunc('month', d.start_date)::date as month,
@@ -444,14 +472,22 @@ def dashboard(
         ),
         charge_months as (
             select
-                date_trunc('month', start_date)::date as month,
+                date_trunc('month', cp.start_date)::date as month,
                 count(*)::int as charges,
-                coalesce(sum(charge_energy_added), 0)::float8 as charge_energy_added_kwh,
-                coalesce(sum(cost), 0)::float8 as cost
-            from public.charging_processes
-            where car_id = %s
-              and (%s::timestamp is null or start_date >= %s::timestamp)
-              and start_date <= %s::timestamp
+                coalesce(sum(cp.charge_energy_added), 0)::float8 as charge_energy_added_kwh,
+                coalesce(sum(cp.charge_energy_added) filter (where not coalesce(ch.fast_charger, false)), 0)::float8 as ac_charge_energy_added_kwh,
+                coalesce(sum(cp.charge_energy_added) filter (where coalesce(ch.fast_charger, false)), 0)::float8 as dc_charge_energy_added_kwh,
+                coalesce(sum(cp.cost), 0)::float8 as cost
+            from public.charging_processes cp
+            left join lateral (
+                select bool_or(coalesce(fast_charger_present, false)) as fast_charger
+                from public.charges
+                where charging_process_id = cp.id
+            ) ch on true
+            where cp.car_id = %s
+              and (%s::timestamp is null or cp.start_date >= %s::timestamp)
+              and cp.start_date <= %s::timestamp
+              and {report_charge_condition()}
             group by 1
         )
         select
@@ -461,6 +497,8 @@ def dashboard(
             coalesce(d.estimated_drive_kwh, 0)::float8 as estimated_drive_kwh,
             coalesce(c.charges, 0) as charges,
             coalesce(c.charge_energy_added_kwh, 0)::float8 as charge_energy_added_kwh,
+            coalesce(c.ac_charge_energy_added_kwh, 0)::float8 as ac_charge_energy_added_kwh,
+            coalesce(c.dc_charge_energy_added_kwh, 0)::float8 as dc_charge_energy_added_kwh,
             coalesce(c.cost, 0)::float8 as cost
         from drive_months d
         full outer join charge_months c using (month)
@@ -669,7 +707,14 @@ def dashboard(
                         (row_number() over (order by p.date))::int as rn,
                         (count(*) over ())::int as total
                     from public.positions p
-                    where p.drive_id = d.id
+                    where p.car_id = d.car_id
+                      and (
+                          p.drive_id = d.id
+                          or (
+                              p.date >= d.start_date
+                              and p.date <= coalesce(d.end_date, d.start_date + interval '8 hours')
+                          )
+                      )
                       and p.latitude is not null
                       and p.longitude is not null
                 ) ranked
@@ -834,6 +879,10 @@ def dashboard(
         where cp.car_id = %s
           and (%s::timestamp is null or cp.start_date >= %s::timestamp)
           and cp.start_date <= %s::timestamp
+          and (
+              {report_charge_condition("cp", "latest")}
+              or {active_charge_condition()}
+          )
         order by cp.start_date desc
         limit 12
         """,
@@ -897,6 +946,10 @@ def dashboard(
         where cp.car_id = %s
           and (%s::timestamp is null or cp.start_date >= %s::timestamp)
           and cp.start_date <= %s::timestamp
+          and (
+              {report_charge_condition("cp", "latest")}
+              or {active_charge_condition()}
+          )
         order by cp.start_date asc
         limit 80
         """,
@@ -966,6 +1019,7 @@ def dashboard(
         where cp.car_id = %s
           and (%s::timestamp is null or cp.start_date >= %s::timestamp)
           and cp.start_date <= %s::timestamp
+          and {report_charge_condition()}
         group by 1
         order by sessions desc, last_seen_at desc
         limit 8

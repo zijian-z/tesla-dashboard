@@ -139,6 +139,8 @@ type MonthPoint = {
   estimated_drive_kwh?: number | null;
   charges: number;
   charge_energy_added_kwh: number;
+  ac_charge_energy_added_kwh: number;
+  dc_charge_energy_added_kwh: number;
   cost: number;
 };
 
@@ -287,6 +289,16 @@ type PeriodKey = '7' | '30' | '90' | '365' | '0' | 'custom';
 const defaultApiBase = import.meta.env.BASE_URL === '/' ? '' : import.meta.env.BASE_URL.replace(/\/$/, '');
 const API_BASE = import.meta.env.VITE_API_BASE ?? defaultApiBase;
 const AUTO_REFRESH_MS = 60_000;
+const DEFAULT_MAP_TILE_URL = 'https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x={x}&y={y}&z={z}';
+const MAP_TILE_URL = String(import.meta.env.VITE_MAP_TILE_URL || DEFAULT_MAP_TILE_URL);
+const MAP_TILE_SUBDOMAINS = String(import.meta.env.VITE_MAP_TILE_SUBDOMAINS || '1,2,3,4')
+  .split(',')
+  .map((item) => item.trim())
+  .filter(Boolean);
+const MAP_COORDINATE_SYSTEM = String(
+  import.meta.env.VITE_MAP_COORDINATE_SYSTEM ||
+    (MAP_TILE_URL.includes('autonavi.com') || MAP_TILE_URL.includes('amap.com') ? 'gcj02' : 'wgs84')
+).toLowerCase();
 
 const ranges: Array<{ label: string; value: PeriodKey }> = [
   { label: '7天', value: '7' },
@@ -410,6 +422,90 @@ function ratio(numerator?: number | null, denominator?: number | null): number |
   return numerator / denominator;
 }
 
+type TooltipPayloadEntry = {
+  dataKey?: string | number;
+  name?: string | number;
+};
+
+type ChartTooltipMetric = {
+  label: string;
+  format: (value: number) => string;
+};
+
+function tooltipKey(name: unknown, entry?: TooltipPayloadEntry): string {
+  const key = entry?.dataKey ?? name;
+  return typeof key === 'string' || typeof key === 'number' ? String(key) : '';
+}
+
+function chartTooltipFormatter(metrics: Record<string, ChartTooltipMetric>) {
+  return (value: unknown, name: unknown, entry?: TooltipPayloadEntry): [string, string] => {
+    const fallbackMetric = Object.values(metrics)[0];
+    const metric = metrics[tooltipKey(name, entry)] ?? metrics[String(name)] ?? fallbackMetric;
+    const numeric = typeof value === 'number' ? value : Number(value);
+    return [Number.isFinite(numeric) && metric ? metric.format(numeric) : '—', metric?.label ?? String(name)];
+  };
+}
+
+function locationLabel(value?: string | null): string {
+  if (!value) return '未知地点';
+  const raw = value.trim();
+  if (!raw) return '未知地点';
+  const parts = raw
+    .split(/[，,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const filtered = parts.filter((part) => !/^(中华人民共和国|中国|广东省?|深圳市?|Guangdong|Shenzhen|China)$/i.test(part));
+  if (filtered.length) return filtered.slice(0, 2).join(' · ');
+  const compact = raw
+    .replace(/中华人民共和国/g, '')
+    .replace(/中国/g, '')
+    .replace(/广东省|广东/g, '')
+    .replace(/深圳市|深圳/g, '')
+    .replace(/\s+/g, '')
+    .trim();
+  if (!compact) return raw;
+  return compact.length > 24 ? `${compact.slice(0, 24)}…` : compact;
+}
+
+function locationTitle(value?: string | null): string {
+  return value?.trim() || '未知地点';
+}
+
+function outOfChina(latitude: number, longitude: number): boolean {
+  return longitude < 72.004 || longitude > 137.8347 || latitude < 0.8293 || latitude > 55.8271;
+}
+
+function transformLatitude(x: number, y: number): number {
+  let result = -100 + 2 * x + 3 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
+  result += ((20 * Math.sin(6 * x * Math.PI) + 20 * Math.sin(2 * x * Math.PI)) * 2) / 3;
+  result += ((20 * Math.sin(y * Math.PI) + 40 * Math.sin((y / 3) * Math.PI)) * 2) / 3;
+  result += ((160 * Math.sin((y / 12) * Math.PI) + 320 * Math.sin((y * Math.PI) / 30)) * 2) / 3;
+  return result;
+}
+
+function transformLongitude(x: number, y: number): number {
+  let result = 300 + x + 2 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
+  result += ((20 * Math.sin(6 * x * Math.PI) + 20 * Math.sin(2 * x * Math.PI)) * 2) / 3;
+  result += ((20 * Math.sin(x * Math.PI) + 40 * Math.sin((x / 3) * Math.PI)) * 2) / 3;
+  result += ((150 * Math.sin((x / 12) * Math.PI) + 300 * Math.sin((x / 30) * Math.PI)) * 2) / 3;
+  return result;
+}
+
+function mapPosition(latitude: number, longitude: number): LatLngExpression {
+  if (MAP_COORDINATE_SYSTEM !== 'gcj02' || outOfChina(latitude, longitude)) return [latitude, longitude];
+  const axis = 6378245.0;
+  const offset = 0.00669342162296594323;
+  let deltaLat = transformLatitude(longitude - 105, latitude - 35);
+  let deltaLng = transformLongitude(longitude - 105, latitude - 35);
+  const radLat = (latitude / 180) * Math.PI;
+  let magic = Math.sin(radLat);
+  magic = 1 - offset * magic * magic;
+  const sqrtMagic = Math.sqrt(magic);
+  deltaLat = (deltaLat * 180) / (((axis * (1 - offset)) / (magic * sqrtMagic)) * Math.PI);
+  deltaLng = (deltaLng * 180) / ((axis / sqrtMagic) * Math.cos(radLat) * Math.PI);
+  return [latitude + deltaLat, longitude + deltaLng];
+}
+
 async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     signal,
@@ -494,7 +590,7 @@ function RouteMap({ points, label }: { points?: RoutePoint[]; label: string }) {
     () =>
       (points ?? [])
         .filter((point) => typeof point.latitude === 'number' && typeof point.longitude === 'number')
-        .map((point) => [point.latitude as number, point.longitude as number]),
+        .map((point) => mapPosition(point.latitude as number, point.longitude as number)),
     [points]
   );
 
@@ -508,7 +604,7 @@ function RouteMap({ points, label }: { points?: RoutePoint[]; label: string }) {
   return (
     <div className="route-map-wrap" aria-label={`${label} 地图轨迹`}>
       <MapContainer className="route-map" center={first} zoom={14} scrollWheelZoom={false} zoomControl={false} attributionControl={false}>
-        <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+        <TileLayer url={MAP_TILE_URL} subdomains={MAP_TILE_SUBDOMAINS} />
         <FitRoute positions={positions} />
         <Polyline positions={positions} pathOptions={{ color: '#3e6ae1', weight: 4, opacity: 0.88 }} />
         <CircleMarker center={first} radius={5} pathOptions={{ color: '#ffffff', fillColor: '#2f7d32', fillOpacity: 1, weight: 2 }} />
@@ -570,11 +666,11 @@ function ChargePowerChart({ charge }: { charge: ChargeRecord }) {
           <YAxis yAxisId="left" tickLine={false} axisLine={false} width={34} />
           <YAxis yAxisId="right" orientation="right" tickLine={false} axisLine={false} width={34} domain={[0, 100]} />
           <Tooltip
-            formatter={(value, name) => {
-              if (name === 'charger_power_kw') return [`${n(Number(value), 0)} kW`, '功率'];
-              if (name === 'battery_level') return [`${n(Number(value), 0)}%`, '电量'];
-              return [kwh(Number(value)), '已充'];
-            }}
+            formatter={chartTooltipFormatter({
+              charger_power_kw: { label: '功率', format: (value) => `${n(value, 0)} kW` },
+              battery_level: { label: '电量', format: percent },
+              charge_energy_added_kwh: { label: '已充', format: kwh }
+            })}
             labelFormatter={(label) => `${label} 分钟`}
           />
           <Bar yAxisId="left" dataKey="charger_power_kw" fill="#8da2fb" radius={[3, 3, 0, 0]} name="charger_power_kw" />
@@ -588,7 +684,7 @@ function ChargePowerChart({ charge }: { charge: ChargeRecord }) {
 function App() {
   const [cars, setCars] = React.useState<Car[]>([]);
   const [carId, setCarId] = React.useState<number | null>(null);
-  const [period, setPeriod] = React.useState<PeriodKey>('30');
+  const [period, setPeriod] = React.useState<PeriodKey>('7');
   const [customEnd, setCustomEnd] = React.useState(() => dateInput(new Date().toISOString()));
   const [customStart, setCustomStart] = React.useState(() => shiftDateInput(dateInput(new Date().toISOString()), -6));
   const [activeReport, setActiveReport] = React.useState<ReportKey>('overview');
@@ -676,6 +772,8 @@ function App() {
         label: monthLabel(item.month),
         distance_km: Number(item.distance_km?.toFixed(1) ?? 0),
         charge_energy_added_kwh: Number(item.charge_energy_added_kwh?.toFixed(1) ?? 0),
+        ac_charge_energy_added_kwh: Number(item.ac_charge_energy_added_kwh?.toFixed(1) ?? 0),
+        dc_charge_energy_added_kwh: Number(item.dc_charge_energy_added_kwh?.toFixed(1) ?? 0),
         estimated_drive_kwh: item.estimated_drive_kwh === null || item.estimated_drive_kwh === undefined ? null : Number(item.estimated_drive_kwh.toFixed(1))
       })),
     [dashboard]
@@ -760,7 +858,13 @@ function App() {
               <CartesianGrid strokeDasharray="3 3" vertical={false} />
               <XAxis dataKey="label" tickLine={false} axisLine={false} minTickGap={18} />
               <YAxis tickLine={false} axisLine={false} width={42} />
-              <Tooltip formatter={(value, name) => [n(Number(value)), name === 'distance_km' ? '行驶 km' : '充电 kWh']} labelFormatter={(label) => `日期 ${label}`} />
+              <Tooltip
+                formatter={chartTooltipFormatter({
+                  distance_km: { label: '行驶', format: km },
+                  charge_energy_added_kwh: { label: '充电', format: kwh }
+                })}
+                labelFormatter={(label) => `日期 ${label}`}
+              />
               <Area type="monotone" dataKey="distance_km" stroke="#0f766e" fill="url(#distanceFill)" strokeWidth={2} name="行驶 km" />
               <Bar dataKey="charge_energy_added_kwh" fill="#d83a45" radius={[4, 4, 0, 0]} name="充电 kWh" />
             </AreaChart>
@@ -783,10 +887,10 @@ function App() {
               <YAxis yAxisId="left" tickLine={false} axisLine={false} width={36} domain={[0, 100]} />
               <YAxis yAxisId="right" orientation="right" tickLine={false} axisLine={false} width={44} />
               <Tooltip
-                formatter={(value, name) => {
-                  if (name === '电量 %') return [percent(Number(value)), '电量'];
-                  return [km(Number(value)), '额定续航'];
-                }}
+                formatter={chartTooltipFormatter({
+                  battery_level: { label: '电量', format: percent },
+                  rated_battery_range_km: { label: '额定续航', format: km }
+                })}
               />
               <Legend iconType="circle" />
               <Line yAxisId="left" type="monotone" dataKey="battery_level" stroke="#d83a45" strokeWidth={2} dot={false} name="电量 %" />
@@ -812,7 +916,7 @@ function App() {
                     <Cell key={entry.state} fill={entry.fill} />
                   ))}
                 </Pie>
-                <Tooltip formatter={(value) => [`${n(Number(value))} 小时`, '时长']} />
+                <Tooltip formatter={chartTooltipFormatter({ value: { label: '时长', format: (value) => `${n(value)} 小时` } })} />
               </PieChart>
             </ResponsiveContainer>
           </div>
@@ -841,9 +945,17 @@ function App() {
               <CartesianGrid strokeDasharray="3 3" vertical={false} />
               <XAxis dataKey="label" tickLine={false} axisLine={false} minTickGap={8} />
               <YAxis tickLine={false} axisLine={false} width={40} />
-              <Tooltip formatter={(value, name) => [n(Number(value)), name === 'distance_km' ? '行驶 km' : '充电 kWh']} />
+              <Tooltip
+                formatter={chartTooltipFormatter({
+                  distance_km: { label: '行驶', format: km },
+                  ac_charge_energy_added_kwh: { label: 'AC充电', format: kwh },
+                  dc_charge_energy_added_kwh: { label: 'DC快充', format: kwh }
+                })}
+              />
+              <Legend iconType="circle" />
               <Bar dataKey="distance_km" fill="#0f766e" radius={[4, 4, 0, 0]} name="行驶 km" />
-              <Bar dataKey="charge_energy_added_kwh" fill="#d83a45" radius={[4, 4, 0, 0]} name="充电 kWh" />
+              <Bar dataKey="ac_charge_energy_added_kwh" stackId="charge" fill="#8da2fb" radius={[4, 4, 0, 0]} name="AC充电 kWh" />
+              <Bar dataKey="dc_charge_energy_added_kwh" stackId="charge" fill="#d83a45" radius={[4, 4, 0, 0]} name="DC快充 kWh" />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -863,7 +975,12 @@ function App() {
               <XAxis dataKey="label" tickLine={false} axisLine={false} minTickGap={18} />
               <YAxis yAxisId="left" tickLine={false} axisLine={false} width={42} />
               <YAxis yAxisId="right" orientation="right" tickLine={false} axisLine={false} width={44} />
-              <Tooltip formatter={(value, name) => [n(Number(value)), name === 'distance_km' ? '里程 km' : 'kWh/100km']} />
+              <Tooltip
+                formatter={chartTooltipFormatter({
+                  distance_km: { label: '里程', format: km },
+                  estimated_kwh_per_100km: { label: '能耗', format: (value) => `${n(value)} kWh/100km` }
+                })}
+              />
               <Legend iconType="circle" />
               <Bar yAxisId="left" dataKey="distance_km" fill="#171a20" radius={[4, 4, 0, 0]} name="里程 km" />
               <Line yAxisId="right" type="monotone" dataKey="estimated_kwh_per_100km" stroke="#3e6ae1" strokeWidth={2} dot={false} name="kWh/100km" />
@@ -886,7 +1003,12 @@ function App() {
               <XAxis dataKey="label" tickLine={false} axisLine={false} minTickGap={18} />
               <YAxis yAxisId="left" tickLine={false} axisLine={false} width={42} />
               <YAxis yAxisId="right" orientation="right" tickLine={false} axisLine={false} width={44} />
-              <Tooltip formatter={(value, name) => [n(Number(value)), name === 'max_power_kw' ? '峰值 kW' : '充电 kWh']} />
+              <Tooltip
+                formatter={chartTooltipFormatter({
+                  charge_energy_added_kwh: { label: '充电', format: kwh },
+                  max_power_kw: { label: '峰值功率', format: (value) => `${n(value, 0)} kW` }
+                })}
+              />
               <Legend iconType="circle" />
               <Bar yAxisId="left" dataKey="charge_energy_added_kwh" fill="#171a20" radius={[4, 4, 0, 0]} name="充电 kWh" />
               <Line yAxisId="right" type="monotone" dataKey="max_power_kw" stroke="#3e6ae1" strokeWidth={2} dot={false} name="峰值 kW" />
@@ -909,7 +1031,9 @@ function App() {
                 <Route size={16} />
                 <span>{dateTime(drive.start_date)}</span>
               </div>
-              <h3>{drive.start_location ?? '未知地点'} → {drive.end_location ?? '未知地点'}</h3>
+              <h3 title={`${locationTitle(drive.start_location)} → ${locationTitle(drive.end_location)}`}>
+                {locationLabel(drive.start_location)} → {locationLabel(drive.end_location)}
+              </h3>
               <div className="record-facts">
                 <span>{km(drive.distance_km)}</span>
                 <span>{minutes(drive.duration_min)}</span>
@@ -917,7 +1041,7 @@ function App() {
                 <span>{drive.estimated_kwh ? kwh(drive.estimated_kwh) : '—'}</span>
                 <span>{drive.estimated_kwh_per_100km ? `${n(drive.estimated_kwh_per_100km)} kWh/100km` : '—'}</span>
               </div>
-              <RouteMap points={drive.route_points} label={`${drive.start_location ?? '未知地点'} 到 ${drive.end_location ?? '未知地点'}`} />
+              <RouteMap points={drive.route_points} label={`${locationLabel(drive.start_location)} 到 ${locationLabel(drive.end_location)}`} />
             </article>
           ))}
         </div>
@@ -938,7 +1062,7 @@ function App() {
                 <span>{dateTime(charge.start_date)}</span>
                 {charge.is_active ? <b>进行中</b> : null}
               </div>
-              <h3>{charge.location ?? '未知地点'}</h3>
+              <h3 title={locationTitle(charge.location)}>{locationLabel(charge.location)}</h3>
               <div className="record-facts">
                 <span>{kwh(charge.charge_energy_added_kwh)}</span>
                 <span>{percent(charge.start_battery_level)} → {percent(charge.end_battery_level)}</span>
@@ -962,7 +1086,9 @@ function App() {
           <div className="location-list location-list-wide">
             {dashboard.locations.routes.map((item) => (
               <div className="location-row" key={`${item.start_location}-${item.end_location}-${item.last_seen_at}`}>
-                <strong>{item.start_location ?? '未知地点'} → {item.end_location ?? '未知地点'}</strong>
+                <strong title={`${locationTitle(item.start_location)} → ${locationTitle(item.end_location)}`}>
+                  {locationLabel(item.start_location)} → {locationLabel(item.end_location)}
+                </strong>
                 <span>{item.trips ?? 0} 次 · 总计 {km(item.distance_km)} · 单次 {km(item.avg_distance_km)} · {dateTime(item.last_seen_at)}</span>
               </div>
             ))}
@@ -978,7 +1104,7 @@ function App() {
             <div className="location-list">
               {dashboard.locations.destinations.map((item) => (
                 <div className="location-row" key={`${item.location}-${item.last_seen_at}`}>
-                  <strong>{item.location}</strong>
+                  <strong title={locationTitle(item.location)}>{locationLabel(item.location)}</strong>
                   <span>{item.visits ?? 0} 次 · {km(item.arriving_distance_km)} · {dateTime(item.last_seen_at)}</span>
                 </div>
               ))}
@@ -993,7 +1119,7 @@ function App() {
             <div className="location-list">
               {dashboard.locations.charging.map((item) => (
                 <div className="location-row" key={`${item.location}-${item.last_seen_at}`}>
-                  <strong>{item.location}</strong>
+                  <strong title={locationTitle(item.location)}>{locationLabel(item.location)}</strong>
                   <span>{item.sessions ?? 0} 次 · {kwh(item.charge_energy_added_kwh)} · {dateTime(item.last_seen_at)}</span>
                 </div>
               ))}
@@ -1060,7 +1186,7 @@ function App() {
               </div>
               <div>
                 <span>位置</span>
-                <strong>{car?.location_label ?? '—'}</strong>
+                <strong title={locationTitle(car?.location_label)}>{car?.location_label ? locationLabel(car.location_label) : '—'}</strong>
               </div>
               <div>
                 <span>更新</span>
@@ -1074,7 +1200,9 @@ function App() {
               <PlugZap size={18} />
               <div>
                 <strong>正在充电</strong>
-                <span>{dashboard.active_charge.location ?? '未知地点'} · {kwh(dashboard.active_charge.charge_energy_added_kwh)} · {dashboard.active_charge.max_power_kw ? `${n(dashboard.active_charge.max_power_kw, 0)} kW` : '功率待更新'}</span>
+                <span title={locationTitle(dashboard.active_charge.location)}>
+                  {locationLabel(dashboard.active_charge.location)} · {kwh(dashboard.active_charge.charge_energy_added_kwh)} · {dashboard.active_charge.max_power_kw ? `${n(dashboard.active_charge.max_power_kw, 0)} kW` : '功率待更新'}
+                </span>
               </div>
             </section>
           ) : null}
@@ -1131,7 +1259,9 @@ function App() {
               <PlugZap size={18} />
               <div>
                 <strong>正在充电</strong>
-                <span>{dashboard.active_charge.location ?? '未知地点'} · {kwh(dashboard.active_charge.charge_energy_added_kwh)} · {minutes(dashboard.active_charge.duration_min)}</span>
+                <span title={locationTitle(dashboard.active_charge.location)}>
+                  {locationLabel(dashboard.active_charge.location)} · {kwh(dashboard.active_charge.charge_energy_added_kwh)} · {minutes(dashboard.active_charge.duration_min)}
+                </span>
               </div>
             </section>
           ) : null}
@@ -1185,7 +1315,7 @@ function App() {
           <div className="status-detail">
             <div>
               <span>当前位置</span>
-              <strong>{car?.location_label ?? '—'}</strong>
+              <strong title={locationTitle(car?.location_label)}>{car?.location_label ? locationLabel(car.location_label) : '—'}</strong>
             </div>
             <div>
               <span>软件版本</span>
