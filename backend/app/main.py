@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
@@ -31,6 +31,34 @@ def address_label(alias: str) -> str:
     """
 
 
+def active_charge_condition(
+    cp_alias: str = "cp",
+    charge_alias: str = "ch",
+    position_alias: str = "lp",
+) -> str:
+    return f"""
+        {cp_alias}.end_date is null
+        and {charge_alias}.latest_charge_at is not null
+        and {charge_alias}.latest_charge_at >= localtimestamp - interval '45 minutes'
+        and {charge_alias}.latest_charge_at >= coalesce(
+            {position_alias}.latest_seen_at,
+            {charge_alias}.latest_charge_at
+        ) - interval '30 minutes'
+        and not exists (
+            select 1
+            from public.drives later_drive
+            where later_drive.car_id = {cp_alias}.car_id
+              and later_drive.start_date > {cp_alias}.start_date
+        )
+        and not exists (
+            select 1
+            from public.charging_processes later_charge
+            where later_charge.car_id = {cp_alias}.car_id
+              and later_charge.start_date > {cp_alias}.start_date
+        )
+    """
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_pool()
@@ -51,7 +79,12 @@ if settings.cors_origins:
     )
 
 
-def _period(car_id: int, days: int) -> dict[str, datetime | int | None]:
+def _period(
+    car_id: int,
+    days: int,
+    start: date | None = None,
+    end: date | None = None,
+) -> dict[str, datetime | int | bool | None]:
     row = fetch_one(
         """
         select min(date) as first_seen_at, max(date) as last_seen_at
@@ -64,6 +97,23 @@ def _period(car_id: int, days: int) -> dict[str, datetime | int | None]:
         raise HTTPException(status_code=404, detail="未找到车辆位置数据")
 
     last_seen_at = row["last_seen_at"]
+    if start or end:
+        first_seen_at = row["first_seen_at"]
+        requested_since = datetime.combine(start, time.min) if start else first_seen_at
+        requested_until = datetime.combine(end, time.max) if end else last_seen_at
+        since = max(requested_since, first_seen_at)
+        until = min(requested_until, last_seen_at)
+        if since > until:
+            raise HTTPException(status_code=404, detail="自定义周期内没有车辆位置数据")
+        return {
+            "days": (until.date() - since.date()).days + 1,
+            "since": since,
+            "until": until,
+            "first_seen_at": row["first_seen_at"],
+            "last_seen_at": last_seen_at,
+            "is_custom": True,
+        }
+
     since = None if days == 0 else last_seen_at - timedelta(days=days)
     return {
         "days": days,
@@ -71,6 +121,7 @@ def _period(car_id: int, days: int) -> dict[str, datetime | int | None]:
         "until": last_seen_at,
         "first_seen_at": row["first_seen_at"],
         "last_seen_at": last_seen_at,
+        "is_custom": False,
     }
 
 
@@ -164,13 +215,18 @@ def cars() -> Any:
 def dashboard(
     car_id: int,
     days: int = Query(default=30, ge=0, le=3650, description="0 表示全部数据"),
+    start: date | None = Query(default=None, description="自定义开始日期，格式 YYYY-MM-DD"),
+    end: date | None = Query(default=None, description="自定义结束日期，格式 YYYY-MM-DD"),
 ) -> Any:
+    if start and end and start > end:
+        raise HTTPException(status_code=422, detail="开始日期不能晚于结束日期")
+
     cars_by_id = {car["id"]: car for car in _cars()}
     car = cars_by_id.get(car_id)
     if car is None:
         raise HTTPException(status_code=404, detail="未找到车辆")
 
-    period = _period(car_id, days)
+    period = _period(car_id, days, start, end)
     since = period["since"]
     until = period["until"]
 
@@ -180,8 +236,17 @@ def dashboard(
             count(*)::int as drive_count,
             coalesce(sum(distance), 0)::float8 as distance_km,
             coalesce(sum(duration_min), 0)::float8 as duration_min,
+            avg(nullif(distance, 0))::float8 as avg_distance_km,
+            max(distance)::float8 as longest_drive_km,
             max(speed_max)::float8 as max_speed_kmh,
             avg(nullif(speed_max, 0))::float8 as avg_max_speed_kmh,
+            coalesce(sum(ascent), 0)::float8 as ascent_m,
+            coalesce(sum(descent), 0)::float8 as descent_m,
+            case
+                when coalesce(sum(nullif(duration_min, 0)), 0) > 0 then
+                    (sum(distance) / nullif(sum(duration_min), 0)) * 60
+                else null
+            end::float8 as avg_drive_speed_kmh,
             coalesce(sum(
                 case
                     when d.distance > 0
@@ -214,25 +279,68 @@ def dashboard(
         join public.cars c on c.id = d.car_id
         where d.car_id = %s
           and (%s::timestamp is null or d.start_date >= %s::timestamp)
+          and d.start_date <= %s::timestamp
         """,
-        (car_id, since, since),
+        (car_id, since, since, until),
     )
 
     charge_stats = fetch_one(
         """
         select
             count(*)::int as charge_count,
-            count(*) filter (where end_date is null)::int as active_charge_count,
-            coalesce(sum(charge_energy_added), 0)::float8 as charge_energy_added_kwh,
-            coalesce(sum(charge_energy_used), 0)::float8 as charge_energy_used_kwh,
-            coalesce(sum(cost), 0)::float8 as cost,
-            avg(end_battery_level - start_battery_level)::float8 as avg_soc_added_pct,
-            max(end_battery_level)::int as max_end_battery_level
-        from public.charging_processes
-        where car_id = %s
-          and (%s::timestamp is null or start_date >= %s::timestamp)
+            coalesce(sum(cp.charge_energy_added), 0)::float8 as charge_energy_added_kwh,
+            coalesce(sum(cp.charge_energy_used), 0)::float8 as charge_energy_used_kwh,
+            coalesce(sum(cp.cost), 0)::float8 as cost,
+            avg(cp.end_battery_level - cp.start_battery_level)::float8 as avg_soc_added_pct,
+            max(cp.end_battery_level)::int as max_end_battery_level,
+            avg(nullif(cp.charge_energy_added, 0))::float8 as avg_charge_energy_added_kwh,
+            avg(nullif(cp.duration_min, 0))::float8 as avg_charge_duration_min,
+            max(ch.max_power_kw)::float8 as max_charge_power_kw,
+            avg(nullif(ch.avg_power_kw, 0))::float8 as avg_charge_power_kw,
+            count(*) filter (where ch.fast_charger)::int as fast_charge_count,
+            case
+                when coalesce(sum(nullif(cp.charge_energy_used, 0)), 0) > 0 then
+                    (sum(cp.charge_energy_added) / nullif(sum(cp.charge_energy_used), 0)) * 100
+                else null
+            end::float8 as charge_efficiency_pct
+        from public.charging_processes cp
+        left join lateral (
+            select
+                max(charger_power)::float8 as max_power_kw,
+                avg(nullif(charger_power, 0))::float8 as avg_power_kw,
+                bool_or(coalesce(fast_charger_present, false)) as fast_charger
+            from public.charges
+            where charging_process_id = cp.id
+        ) ch on true
+        where cp.car_id = %s
+          and (%s::timestamp is null or cp.start_date >= %s::timestamp)
+          and cp.start_date <= %s::timestamp
         """,
-        (car_id, since, since),
+        (car_id, since, since, until),
+    )
+
+    active_charge_stats = fetch_one(
+        f"""
+        select count(*)::int as active_charge_count
+        from public.charging_processes cp
+        left join lateral (
+            select max(date) as latest_charge_at
+            from public.charges
+            where charging_process_id = cp.id
+        ) ch on true
+        left join lateral (
+            select date as latest_seen_at
+            from public.positions
+            where car_id = cp.car_id
+            order by date desc
+            limit 1
+        ) lp on true
+        where cp.car_id = %s
+          and (%s::timestamp is null or cp.start_date >= %s::timestamp)
+          and cp.start_date <= %s::timestamp
+          and {active_charge_condition()}
+        """,
+        (car_id, since, since, until),
     )
 
     lifetime = fetch_one(
@@ -252,14 +360,27 @@ def dashboard(
         """
         with drive_days as (
             select
-                date_trunc('day', start_date)::date as day,
+                date_trunc('day', d.start_date)::date as day,
                 count(*)::int as drives,
-                coalesce(sum(distance), 0)::float8 as distance_km,
-                coalesce(sum(duration_min), 0)::float8 as duration_min,
-                max(speed_max)::float8 as max_speed_kmh
-            from public.drives
-            where car_id = %s
-              and (%s::timestamp is null or start_date >= %s::timestamp)
+                coalesce(sum(d.distance), 0)::float8 as distance_km,
+                coalesce(sum(d.duration_min), 0)::float8 as duration_min,
+                max(d.speed_max)::float8 as max_speed_kmh,
+                coalesce(sum(
+                    case
+                        when d.distance > 0
+                         and d.start_rated_range_km is not null
+                         and d.end_rated_range_km is not null
+                         and d.start_rated_range_km > d.end_rated_range_km
+                         and car.efficiency is not null
+                        then (d.start_rated_range_km - d.end_rated_range_km) * car.efficiency
+                        else 0
+                    end
+                ), 0)::float8 as estimated_drive_kwh
+            from public.drives d
+            join public.cars car on car.id = d.car_id
+            where d.car_id = %s
+              and (%s::timestamp is null or d.start_date >= %s::timestamp)
+              and d.start_date <= %s::timestamp
             group by 1
         ),
         charge_days as (
@@ -271,6 +392,7 @@ def dashboard(
             from public.charging_processes
             where car_id = %s
               and (%s::timestamp is null or start_date >= %s::timestamp)
+              and start_date <= %s::timestamp
             group by 1
         )
         select
@@ -279,6 +401,12 @@ def dashboard(
             coalesce(d.distance_km, 0)::float8 as distance_km,
             coalesce(d.duration_min, 0)::float8 as duration_min,
             d.max_speed_kmh,
+            coalesce(d.estimated_drive_kwh, 0)::float8 as estimated_drive_kwh,
+            case
+                when coalesce(d.distance_km, 0) > 0 then
+                    (coalesce(d.estimated_drive_kwh, 0) / nullif(d.distance_km, 0)) * 100
+                else null
+            end::float8 as estimated_kwh_per_100km,
             coalesce(c.charges, 0) as charges,
             coalesce(c.charge_energy_added_kwh, 0)::float8 as charge_energy_added_kwh,
             coalesce(c.cost, 0)::float8 as cost
@@ -286,19 +414,32 @@ def dashboard(
         full outer join charge_days c using (day)
         order by day
         """,
-        (car_id, since, since, car_id, since, since),
+        (car_id, since, since, until, car_id, since, since, until),
     )
 
     monthly = fetch_all(
         """
         with drive_months as (
             select
-                date_trunc('month', start_date)::date as month,
+                date_trunc('month', d.start_date)::date as month,
                 count(*)::int as drives,
-                coalesce(sum(distance), 0)::float8 as distance_km
-            from public.drives
-            where car_id = %s
-              and (%s::timestamp is null or start_date >= %s::timestamp)
+                coalesce(sum(d.distance), 0)::float8 as distance_km,
+                coalesce(sum(
+                    case
+                        when d.distance > 0
+                         and d.start_rated_range_km is not null
+                         and d.end_rated_range_km is not null
+                         and d.start_rated_range_km > d.end_rated_range_km
+                         and car.efficiency is not null
+                        then (d.start_rated_range_km - d.end_rated_range_km) * car.efficiency
+                        else 0
+                    end
+                ), 0)::float8 as estimated_drive_kwh
+            from public.drives d
+            join public.cars car on car.id = d.car_id
+            where d.car_id = %s
+              and (%s::timestamp is null or d.start_date >= %s::timestamp)
+              and d.start_date <= %s::timestamp
             group by 1
         ),
         charge_months as (
@@ -310,12 +451,14 @@ def dashboard(
             from public.charging_processes
             where car_id = %s
               and (%s::timestamp is null or start_date >= %s::timestamp)
+              and start_date <= %s::timestamp
             group by 1
         )
         select
             coalesce(d.month, c.month) as month,
             coalesce(d.drives, 0) as drives,
             coalesce(d.distance_km, 0)::float8 as distance_km,
+            coalesce(d.estimated_drive_kwh, 0)::float8 as estimated_drive_kwh,
             coalesce(c.charges, 0) as charges,
             coalesce(c.charge_energy_added_kwh, 0)::float8 as charge_energy_added_kwh,
             coalesce(c.cost, 0)::float8 as cost
@@ -323,7 +466,7 @@ def dashboard(
         full outer join charge_months c using (month)
         order by month
         """,
-        (car_id, since, since, car_id, since, since),
+        (car_id, since, since, until, car_id, since, since, until),
     )
 
     states = fetch_all(
@@ -370,10 +513,91 @@ def dashboard(
         from public.positions
         where car_id = %s
           and (%s::timestamp is null or date >= %s::timestamp)
+          and date <= %s::timestamp
           and battery_level is not null
         order by date_trunc('day', date), date desc
         """,
-        (car_id, since, since),
+        (car_id, since, since, until),
+    )
+
+    insights = fetch_one(
+        """
+        with first_position as (
+            select *
+            from public.positions
+            where car_id = %s
+              and (%s::timestamp is null or date >= %s::timestamp)
+              and date <= %s::timestamp
+            order by date asc
+            limit 1
+        ),
+        last_position as (
+            select *
+            from public.positions
+            where car_id = %s
+              and (%s::timestamp is null or date >= %s::timestamp)
+              and date <= %s::timestamp
+            order by date desc
+            limit 1
+        ),
+        position_stats as (
+            select
+                avg(outside_temp)::float8 as avg_outside_temp,
+                avg(inside_temp)::float8 as avg_inside_temp,
+                avg(tpms_pressure_fl)::float8 as avg_tpms_pressure_fl,
+                avg(tpms_pressure_fr)::float8 as avg_tpms_pressure_fr,
+                avg(tpms_pressure_rl)::float8 as avg_tpms_pressure_rl,
+                avg(tpms_pressure_rr)::float8 as avg_tpms_pressure_rr
+            from public.positions
+            where car_id = %s
+              and (%s::timestamp is null or date >= %s::timestamp)
+              and date <= %s::timestamp
+        )
+        select
+            fp.date as first_sample_at,
+            lp.date as latest_sample_at,
+            fp.odometer::float8 as first_odometer_km,
+            lp.odometer::float8 as latest_odometer_km,
+            case
+                when fp.odometer is not null and lp.odometer is not null
+                then (lp.odometer - fp.odometer)::float8
+                else null
+            end as odometer_delta_km,
+            fp.rated_battery_range_km::float8 as first_rated_battery_range_km,
+            lp.rated_battery_range_km::float8 as latest_rated_battery_range_km,
+            case
+                when fp.rated_battery_range_km is not null and lp.rated_battery_range_km is not null
+                then (lp.rated_battery_range_km - fp.rated_battery_range_km)::float8
+                else null
+            end as rated_range_delta_km,
+            lp.battery_level as latest_battery_level,
+            lp.usable_battery_level as latest_usable_battery_level,
+            lp.outside_temp::float8 as latest_outside_temp,
+            lp.inside_temp::float8 as latest_inside_temp,
+            ps.avg_outside_temp,
+            ps.avg_inside_temp,
+            ps.avg_tpms_pressure_fl,
+            ps.avg_tpms_pressure_fr,
+            ps.avg_tpms_pressure_rl,
+            ps.avg_tpms_pressure_rr
+        from first_position fp
+        cross join last_position lp
+        cross join position_stats ps
+        """,
+        (
+            car_id,
+            since,
+            since,
+            until,
+            car_id,
+            since,
+            since,
+            until,
+            car_id,
+            since,
+            since,
+            until,
+        ),
     )
 
     drive_location_start = f"coalesce(nullif(sg.name, ''), {address_label('sa')})"
@@ -403,7 +627,16 @@ def dashboard(
                  and c.efficiency is not null
                 then ((d.start_rated_range_km - d.end_rated_range_km) * c.efficiency)::float8
                 else null
-            end as estimated_kwh
+            end as estimated_kwh,
+            case
+                when d.distance > 0
+                 and d.start_rated_range_km is not null
+                 and d.end_rated_range_km is not null
+                 and d.start_rated_range_km > d.end_rated_range_km
+                 and c.efficiency is not null
+                then (((d.start_rated_range_km - d.end_rated_range_km) * c.efficiency) / d.distance * 100)::float8
+                else null
+            end as estimated_kwh_per_100km
         from public.drives d
         join public.cars c on c.id = d.car_id
         left join public.addresses sa on sa.id = d.start_address_id
@@ -412,10 +645,57 @@ def dashboard(
         left join public.geofences eg on eg.id = d.end_geofence_id
         where d.car_id = %s
           and (%s::timestamp is null or d.start_date >= %s::timestamp)
+          and d.start_date <= %s::timestamp
         order by d.start_date desc
         limit 12
         """,
-        (car_id, since, since),
+        (car_id, since, since, until),
+    )
+
+    drive_efficiency = fetch_all(
+        f"""
+        select
+            d.id,
+            d.start_date,
+            d.end_date,
+            d.distance::float8 as distance_km,
+            d.duration_min,
+            d.speed_max,
+            d.outside_temp_avg::float8 as outside_temp_avg,
+            {drive_location_start} as start_location,
+            {drive_location_end} as end_location,
+            case
+                when d.distance > 0
+                 and d.start_rated_range_km is not null
+                 and d.end_rated_range_km is not null
+                 and d.start_rated_range_km > d.end_rated_range_km
+                 and c.efficiency is not null
+                then ((d.start_rated_range_km - d.end_rated_range_km) * c.efficiency)::float8
+                else null
+            end as estimated_kwh,
+            case
+                when d.distance > 0
+                 and d.start_rated_range_km is not null
+                 and d.end_rated_range_km is not null
+                 and d.start_rated_range_km > d.end_rated_range_km
+                 and c.efficiency is not null
+                then (((d.start_rated_range_km - d.end_rated_range_km) * c.efficiency) / d.distance * 100)::float8
+                else null
+            end as estimated_kwh_per_100km
+        from public.drives d
+        join public.cars c on c.id = d.car_id
+        left join public.addresses sa on sa.id = d.start_address_id
+        left join public.addresses ea on ea.id = d.end_address_id
+        left join public.geofences sg on sg.id = d.start_geofence_id
+        left join public.geofences eg on eg.id = d.end_geofence_id
+        where d.car_id = %s
+          and coalesce(d.distance, 0) > 0.1
+          and (%s::timestamp is null or d.start_date >= %s::timestamp)
+          and d.start_date <= %s::timestamp
+        order by d.start_date asc
+        limit 80
+        """,
+        (car_id, since, since, until),
     )
 
     charge_location = f"coalesce(nullif(g.name, ''), {address_label('a')})"
@@ -425,32 +705,123 @@ def dashboard(
             cp.id,
             cp.start_date,
             cp.end_date,
-            cp.charge_energy_added::float8 as charge_energy_added_kwh,
+            coalesce(cp.charge_energy_added::float8, latest.charge_energy_added_kwh) as charge_energy_added_kwh,
             cp.charge_energy_used::float8 as charge_energy_used_kwh,
             cp.start_battery_level,
-            cp.end_battery_level,
-            cp.duration_min,
+            coalesce(cp.end_battery_level, latest.battery_level) as end_battery_level,
+            case
+                when cp.duration_min is not null then cp.duration_min
+                when ch.latest_charge_at is not null then
+                    greatest(
+                        0.0,
+                        floor(extract(epoch from (ch.latest_charge_at - cp.start_date)) / 60.0)
+                    )::int
+                else null
+            end as duration_min,
             cp.outside_temp_avg::float8 as outside_temp_avg,
             cp.cost::float8 as cost,
             {charge_location} as location,
+            ch.latest_charge_at,
             ch.max_power_kw,
-            ch.fast_charger
+            ch.fast_charger,
+            ({active_charge_condition()})::bool as is_active
         from public.charging_processes cp
         left join public.addresses a on a.id = cp.address_id
         left join public.geofences g on g.id = cp.geofence_id
         left join lateral (
             select
+                max(date) as latest_charge_at,
                 max(charger_power)::float8 as max_power_kw,
                 bool_or(coalesce(fast_charger_present, false)) as fast_charger
             from public.charges
             where charging_process_id = cp.id
         ) ch on true
+        left join lateral (
+            select
+                charge_energy_added::float8 as charge_energy_added_kwh,
+                battery_level
+            from public.charges
+            where charging_process_id = cp.id
+            order by date desc
+            limit 1
+        ) latest on true
+        left join lateral (
+            select date as latest_seen_at
+            from public.positions
+            where car_id = cp.car_id
+            order by date desc
+            limit 1
+        ) lp on true
         where cp.car_id = %s
           and (%s::timestamp is null or cp.start_date >= %s::timestamp)
+          and cp.start_date <= %s::timestamp
         order by cp.start_date desc
         limit 12
         """,
-        (car_id, since, since),
+        (car_id, since, since, until),
+    )
+
+    charge_sessions = fetch_all(
+        f"""
+        select
+            cp.id,
+            cp.start_date,
+            cp.end_date,
+            coalesce(cp.charge_energy_added::float8, latest.charge_energy_added_kwh) as charge_energy_added_kwh,
+            cp.charge_energy_used::float8 as charge_energy_used_kwh,
+            cp.start_battery_level,
+            coalesce(cp.end_battery_level, latest.battery_level) as end_battery_level,
+            case
+                when cp.duration_min is not null then cp.duration_min
+                when ch.latest_charge_at is not null then
+                    greatest(
+                        0.0,
+                        floor(extract(epoch from (ch.latest_charge_at - cp.start_date)) / 60.0)
+                    )::int
+                else null
+            end as duration_min,
+            cp.cost::float8 as cost,
+            {charge_location} as location,
+            ch.latest_charge_at,
+            ch.max_power_kw,
+            ch.avg_power_kw,
+            ch.fast_charger,
+            ({active_charge_condition()})::bool as is_active
+        from public.charging_processes cp
+        left join public.addresses a on a.id = cp.address_id
+        left join public.geofences g on g.id = cp.geofence_id
+        left join lateral (
+            select
+                max(date) as latest_charge_at,
+                max(charger_power)::float8 as max_power_kw,
+                avg(nullif(charger_power, 0))::float8 as avg_power_kw,
+                bool_or(coalesce(fast_charger_present, false)) as fast_charger
+            from public.charges
+            where charging_process_id = cp.id
+        ) ch on true
+        left join lateral (
+            select
+                charge_energy_added::float8 as charge_energy_added_kwh,
+                battery_level
+            from public.charges
+            where charging_process_id = cp.id
+            order by date desc
+            limit 1
+        ) latest on true
+        left join lateral (
+            select date as latest_seen_at
+            from public.positions
+            where car_id = cp.car_id
+            order by date desc
+            limit 1
+        ) lp on true
+        where cp.car_id = %s
+          and (%s::timestamp is null or cp.start_date >= %s::timestamp)
+          and cp.start_date <= %s::timestamp
+        order by cp.start_date asc
+        limit 80
+        """,
+        (car_id, since, since, until),
     )
 
     top_destinations = fetch_all(
@@ -469,11 +840,38 @@ def dashboard(
           and d.end_date is not null
           and coalesce(d.distance, 0) > 0.1
           and (%s::timestamp is null or d.start_date >= %s::timestamp)
-        group by location
+          and d.start_date <= %s::timestamp
+        group by 1
         order by visits desc, last_seen_at desc
         limit 8
         """,
-        (car_id, since, since),
+        (car_id, since, since, until),
+    )
+
+    route_stats = fetch_all(
+        f"""
+        select
+            {drive_location_start} as start_location,
+            {drive_location_end} as end_location,
+            count(*)::int as trips,
+            coalesce(sum(d.distance), 0)::float8 as distance_km,
+            avg(nullif(d.distance, 0))::float8 as avg_distance_km,
+            max(d.end_date) as last_seen_at
+        from public.drives d
+        left join public.addresses sa on sa.id = d.start_address_id
+        left join public.addresses ea on ea.id = d.end_address_id
+        left join public.geofences sg on sg.id = d.start_geofence_id
+        left join public.geofences eg on eg.id = d.end_geofence_id
+        where d.car_id = %s
+          and d.end_date is not null
+          and coalesce(d.distance, 0) > 0.1
+          and (%s::timestamp is null or d.start_date >= %s::timestamp)
+          and d.start_date <= %s::timestamp
+        group by 1, 2
+        order by trips desc, distance_km desc, last_seen_at desc
+        limit 10
+        """,
+        (car_id, since, since, until),
     )
 
     top_charge_locations = fetch_all(
@@ -488,11 +886,12 @@ def dashboard(
         left join public.geofences g on g.id = cp.geofence_id
         where cp.car_id = %s
           and (%s::timestamp is null or cp.start_date >= %s::timestamp)
-        group by location
+          and cp.start_date <= %s::timestamp
+        group by 1
         order by sessions desc, last_seen_at desc
         limit 8
         """,
-        (car_id, since, since),
+        (car_id, since, since, until),
     )
 
     updates = fetch_all(
@@ -511,15 +910,53 @@ def dashboard(
         select
             cp.id,
             cp.start_date,
-            cp.charge_energy_added::float8 as charge_energy_added_kwh,
+            cp.end_date,
+            coalesce(cp.charge_energy_added::float8, latest.charge_energy_added_kwh) as charge_energy_added_kwh,
             cp.start_battery_level,
-            cp.end_battery_level,
-            {charge_location} as location
+            coalesce(cp.end_battery_level, latest.battery_level) as end_battery_level,
+            case
+                when cp.duration_min is not null then cp.duration_min
+                when ch.latest_charge_at is not null then
+                    greatest(
+                        0.0,
+                        floor(extract(epoch from (ch.latest_charge_at - cp.start_date)) / 60.0)
+                    )::int
+                else null
+            end as duration_min,
+            {charge_location} as location,
+            ch.latest_charge_at,
+            ch.max_power_kw,
+            ch.fast_charger,
+            true as is_active
         from public.charging_processes cp
         left join public.addresses a on a.id = cp.address_id
         left join public.geofences g on g.id = cp.geofence_id
+        left join lateral (
+            select
+                max(date) as latest_charge_at,
+                max(charger_power)::float8 as max_power_kw,
+                bool_or(coalesce(fast_charger_present, false)) as fast_charger
+            from public.charges
+            where charging_process_id = cp.id
+        ) ch on true
+        left join lateral (
+            select
+                charge_energy_added::float8 as charge_energy_added_kwh,
+                battery_level
+            from public.charges
+            where charging_process_id = cp.id
+            order by date desc
+            limit 1
+        ) latest on true
+        left join lateral (
+            select date as latest_seen_at
+            from public.positions
+            where car_id = cp.car_id
+            order by date desc
+            limit 1
+        ) lp on true
         where cp.car_id = %s
-          and cp.end_date is null
+          and {active_charge_condition()}
         order by cp.start_date desc
         limit 1
         """,
@@ -533,17 +970,22 @@ def dashboard(
             "summary": {
                 **(drive_stats or {}),
                 **(charge_stats or {}),
+                **(active_charge_stats or {}),
             },
             "lifetime": lifetime or {},
             "daily": daily,
             "monthly": monthly,
             "states": states,
             "range": range_series,
+            "insights": insights or {},
+            "drive_efficiency": drive_efficiency,
+            "charge_sessions": charge_sessions,
             "recent_drives": recent_drives,
             "recent_charges": recent_charges,
             "locations": {
                 "destinations": top_destinations,
                 "charging": top_charge_locations,
+                "routes": route_stats,
             },
             "updates": updates,
             "active_charge": active_charge,

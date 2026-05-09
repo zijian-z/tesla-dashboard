@@ -1,46 +1,44 @@
 # TeslaMate Dashboard
 
-一个完整编排的 TeslaMate 采集 + 只读报表界面。TeslaMate 只负责采集车辆数据；报表由本项目的 FastAPI 后端和移动端优先的前端提供。Nginx 是唯一对外入口，负责 Basic Auth，API、TeslaMate、PostgreSQL、MQTT 都不直接暴露到宿主机公网端口。
+一个完整编排的 TeslaMate 采集栈和只读报表界面。默认只把 `web` 服务发布到宿主机 `80` 端口：
+
+- `http://服务器/`：TeslaMate，用于授权和原生管理界面
+- `http://服务器/dashboard/`：本项目的 dashboard
+
+API、PostgreSQL、MQTT 和 TeslaMate 容器端口都只在 Docker 网络内使用。对外入口统一由内置 Nginx 提供 Basic Auth、静态页面和内部转发，避免在宿主机上额外暴露多个服务端口。
+
+## 功能
+
+- 当前车辆状态、电量、续航、里程、位置、温度、胎压、软件版本
+- 7 天、30 天、90 天、一年、全部、自定义日期范围
+- 概览、趋势、行程、充电、效率、电池、地点、车辆信息报表
+- 行程统计：里程、时长、最高车速、平均速度、能耗、海拔累计、路线排行
+- 充电统计：电量、费用、SOC 增量、功率、快充次数、充电地点
+- 电池和车辆观测：电量/续航趋势、状态占比、温度、胎压
+- 只读访问 TeslaMate 数据库，不写入业务表
+
+Dashboard 会根据最新充电采样判断实时充电状态，避免从“充电中”备份恢复后把历史未闭合充电会话误判为当前仍在充电。
 
 ## 架构
 
 ```text
-浏览器
+Browser
   |
-  | Basic Auth
   v
-Nginx / Frontend  -- 内网 HTTP -->  FastAPI Backend  -- Docker 内网 -->  PostgreSQL
-       |
-       └── 根路径 / 反向代理到内网 TeslaMate
+web / Nginx :80
+  |-- /dashboard/      -> dashboard frontend
+  |-- /dashboard/api/  -> FastAPI api:8000
+  `-- /               -> TeslaMate teslamate:4000
 
-TeslaMate Collector  -- 内网 --> PostgreSQL + MQTT
+TeslaMate -> PostgreSQL + MQTT
+FastAPI   -> PostgreSQL read-only role
 ```
 
-默认生产部署只发布 `web` 的 `WEB_PORT`。`api` 只在 Docker 内网暴露 `8000`，TeslaMate 只在 Docker 内网暴露 `4000`，PostgreSQL 和 MQTT 也都只在内网可见。`database` 镜像内置首次启动恢复备份脚本，恢复后会自动清空备份里的旧 TeslaMate token，`db-init` 服务会自动创建只读数据库账号，不需要手工执行 SQL，也不需要在部署目录额外复制脚本文件。
+`database` 镜像内置备份恢复脚本。首次创建数据库 volume 时，如果部署目录里有 TeslaMate 备份，会自动导入，并清空备份中的旧 TeslaMate token，方便新实例重新授权。
 
-## 功能
+## 本地验证
 
-- 当前车辆状态、电量、额定续航、里程表、温度、胎压、软件版本
-- 周期行程统计：里程、时长、最高速度、估算能耗
-- 周期充电统计：充电次数、电量、费用、SOC 增量、进行中的充电
-- 日趋势、月汇总、电量/续航趋势、在线/睡眠/离线状态占比
-- 最近行程、最近充电、常到地点、充电地点
-- 移动端优先的单页界面
-
-## 本地用当前备份验证
-
-当前目录里的 `teslamate.bck` 是 PostgreSQL 18 plain SQL dump，可以直接用本地 compose 通过同一套恢复脚本恢复测试库。恢复完成后，脚本会自动清空备份里的旧 TeslaMate token：
-
-```bash
-docker compose version
-```
-
-如果提示 `unknown command: docker compose` 或 `unknown shorthand flag: 'f' in -f`，说明没有安装 Docker Compose v2 插件。在 Ubuntu 24.04 上安装：
-
-```bash
-sudo apt-get update
-sudo apt-get install -y docker-compose-v2
-```
+当前目录存在 `teslamate.bck` 时，可以直接用本地 compose 恢复并验证：
 
 ```bash
 sudo docker compose -f compose.local.yaml up --build
@@ -49,39 +47,29 @@ sudo docker compose -f compose.local.yaml up --build
 访问：
 
 ```text
-http://localhost:8080/dashboard/
+http://localhost/dashboard/
 用户名：admin
 密码：change-me-local
 ```
 
-首次启动会导入 `teslamate.bck`，需要等待 PostgreSQL 初始化完成。重新导入时先删除本地 volume：
+本地重新导入备份：
 
 ```bash
 sudo docker compose -f compose.local.yaml down -v
 sudo docker compose -f compose.local.yaml up --build
 ```
 
-如果你曾用旧版 `compose.local.yaml` 启动并看到 PostgreSQL 18 的 `/var/lib/postgresql/data (unused mount/volume)` 报错，先停止旧容器：
-
-```bash
-sudo docker compose -f compose.local.yaml down
-```
-
-旧的失败 volume 名通常是 `tesla-dashboard-local_pgdata`。新版配置使用 `pgdata18`，不会再复用旧卷；确认不需要旧测试卷后可清理：
-
-```bash
-sudo docker volume rm tesla-dashboard-local_pgdata
-```
+如果宿主机 `80` 端口已被占用，可以临时修改 `compose.local.yaml` 的 `web.ports`，例如改为 `"8080:80"` 后访问 `http://localhost:8080/dashboard/`。
 
 ## 生产部署
 
-### 1. 配置环境变量
+### 1. 准备 `.env`
 
 ```bash
 cp .env.example .env
 ```
 
-编辑 `.env`：
+至少需要确认这些值：
 
 ```dotenv
 IMAGE_REGISTRY=registry.cn-shenzhen.aliyuncs.com
@@ -92,115 +80,74 @@ WEB_PORT=80
 BASIC_AUTH_USER=admin
 BASIC_AUTH_PASSWORD=change-this-password
 
-MOSQUITTO_TAG=2
-TESLAMATE_TAG=latest
 TM_ENCRYPTION_KEY=replace-with-a-long-random-encryption-key
-TM_DB_USER=teslamate
 TM_DB_PASS=replace-with-a-strong-database-password
-TM_DB_NAME=teslamate
-TZ=Asia/Shanghai
-
-DASHBOARD_DB_USER=dashboard_readonly
 DASHBOARD_DB_PASSWORD=replace-with-a-different-strong-password
+TZ=Asia/Shanghai
 ```
 
-建议用下面的命令生成强随机值：
+建议生成强随机密钥和密码：
 
 ```bash
 openssl rand -base64 48
 ```
 
-`TM_ENCRYPTION_KEY` 是 TeslaMate 加密密钥，生产环境创建后要妥善保管。`DASHBOARD_DB_USER` 会由 `db-init` 自动创建为只读账号；它只获得 `public` schema 的读权限，不会获得 `private` schema 权限。
-
-大陆机器部署前，先在 GitHub Actions 手工运行一次 `Build and Push Images`，把本项目镜像和运行依赖镜像都推送到阿里云镜像仓库。生产 `compose.yaml` 默认会从 `${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}` 拉取所有镜像，不再直接依赖 Docker Hub。
-
-生产部署目录最少只需要这些文件：
-
-- `compose.yaml`
-- `.env`
-- 可选的 TeslaMate 数据库备份文件，例如 `teslamate.bck`
-
-恢复备份和创建只读账号的脚本已经打进 `tesla-dashboard-postgres` 镜像，不需要额外复制 `deploy/` 目录。
+`TM_ENCRYPTION_KEY` 是 TeslaMate 的加密密钥，生产环境创建后要妥善保存。`DASHBOARD_DB_USER` 默认是 `dashboard_readonly`，由 `db-init` 自动创建，只授予 `public` schema 的读取权限。
 
 ### 2. 启动
-
-先确认部署机有 Docker Compose v2：
-
-```bash
-docker compose version
-```
-
-Ubuntu 24.04 如果缺失 Compose v2：
-
-```bash
-sudo apt-get update
-sudo apt-get install -y docker-compose-v2
-```
 
 ```bash
 sudo docker compose pull
 sudo docker compose up -d
 ```
 
-之后访问：
+首次启动后：
 
-```text
-http://部署机IP/
-```
+1. 打开 `http://服务器/` 完成 TeslaMate 授权。
+2. 打开 `http://服务器/dashboard/` 查看 dashboard。
 
-第一次启动后，访问 `http://部署机IP/` 完成 TeslaMate 授权初始化；之后日常访问 `http://部署机IP/dashboard/` 查看本项目的报表界面。TeslaMate 没有发布独立宿主机端口，根路径 `/` 和 `/dashboard/` 都受同一组 Basic Auth 保护。
+`WEB_PORT` 默认是 `80`。如果机器前面还有负载均衡或网关，建议让它直接转发到宿主机 `80`，不要额外发布 TeslaMate、API、PostgreSQL 或 MQTT 端口。
 
-只要外层还有反向代理或公网入口，把它转发到 `WEB_PORT` 即可；不需要额外暴露 TeslaMate、PostgreSQL 或 MQTT。
+## 导入备份
 
-### 3. 直接导入同级目录备份
-
-如果 `compose.yaml` 同级目录里存在数据库备份文件，`database` 服务在第一次创建新的 PostgreSQL 卷时会自动导入。支持的文件名优先级包括：
+把备份文件放在 `compose.yaml` 同级目录，数据库 volume 首次创建时会自动导入。优先识别这些文件名：
 
 - `teslamate.bck`
 - `teslamate.sql`
 - `teslamate.dump`
 - `teslamate.backup`
-- 以及这些后缀的 `.gz` 版本
+- 上述后缀的 `.gz` 版本
 
-如果目录里有多个备份文件，脚本会按名称优先级取第一个匹配项。这个导入只在数据库卷首次初始化时执行一次；后续镜像更新、容器重启不会再次导入，也不会覆盖已有数据。若要重新导入，需要先删除对应的 PostgreSQL volume。
-
-恢复脚本会在备份导入完成后自动清空 `private.tokens`。如果备份来自旧版 TeslaMate，脚本也会兼容清空 `public.tokens`。这样历史行程、充电、位置等数据会保留，但不会继承备份里的旧 Tesla 授权；启动后访问 `http://部署机IP/` 重新完成授权即可。
-
-完整重建并重新导入备份：
+导入只在新的 PostgreSQL volume 初始化时执行一次。需要重新导入时：
 
 ```bash
 sudo docker compose down -v --remove-orphans
 sudo docker compose pull
-sudo docker compose up -d database
-sudo docker compose logs -f database
 sudo docker compose up -d
 ```
 
-`down -v` 会删除 PostgreSQL 持久化 volume。只有在确认同级目录里的备份文件可用时才执行这条命令。
+`down -v` 会删除数据库持久化 volume。执行前确认备份文件可用。
 
-## GitHub Actions 推送到阿里云镜像仓库
+## 镜像推送
 
-工作流在 [.github/workflows/publish.yml](.github/workflows/publish.yml)。在 GitHub 仓库的 `Settings -> Secrets and variables -> Actions` 添加：
-
-| Secret | 示例 |
-| --- | --- |
-| `ALIYUN_REGISTRY` | `registry.cn-shenzhen.aliyuncs.com` |
-| `ALIYUN_NAME_SPACE` | `your-namespace` |
-| `ALIYUN_REGISTRY_USER` | 阿里云镜像仓库用户名 |
-| `ALIYUN_REGISTRY_PASSWORD` | 阿里云镜像仓库密码或访问凭证 |
-
-这个 workflow 只支持手工触发。到 GitHub Actions 页面选择 `Build and Push Images`，点击 `Run workflow`，填写镜像 tag，默认是 `latest`。
+大陆机器部署前，建议先用 GitHub Actions 把本项目镜像和运行依赖推送到阿里云镜像仓库。工作流文件：
 
 ```text
-registry.cn-shenzhen.aliyuncs.com/your-namespace/tesla-dashboard-api:<image_tag>
-registry.cn-shenzhen.aliyuncs.com/your-namespace/tesla-dashboard-web:<image_tag>
-registry.cn-shenzhen.aliyuncs.com/your-namespace/tesla-dashboard-postgres:<image_tag>
-registry.cn-shenzhen.aliyuncs.com/your-namespace/postgres:18-trixie
-registry.cn-shenzhen.aliyuncs.com/your-namespace/eclipse-mosquitto:2
-registry.cn-shenzhen.aliyuncs.com/your-namespace/teslamate:latest
+.github/workflows/publish.yml
 ```
 
-## 直接开发
+需要在 GitHub `Settings -> Secrets and variables -> Actions` 配置：
+
+| Secret | 用途 |
+| --- | --- |
+| `ALIYUN_REGISTRY` | 阿里云镜像仓库地址 |
+| `ALIYUN_NAME_SPACE` | 命名空间 |
+| `ALIYUN_REGISTRY_USER` | 仓库用户名 |
+| `ALIYUN_REGISTRY_PASSWORD` | 仓库密码或访问凭证 |
+
+手工运行 `Build and Push Images`，填写镜像 tag。`.env` 中的 `IMAGE_TAG` 要和推送的 tag 一致。
+
+## 开发
 
 后端：
 
