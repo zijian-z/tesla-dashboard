@@ -186,6 +186,12 @@ type TodayEnergy = {
   prediction_confidence?: string | null;
   current_battery_level?: number | null;
   estimated_end_battery_level?: number | null;
+  static_history_days?: number | null;
+  static_history_hours?: {
+    asleep?: number;
+    awake?: number;
+    unknown?: number;
+  };
   actual_kwh?: number | null;
   predicted_remaining_kwh?: number | null;
   estimated_total_kwh?: number | null;
@@ -375,6 +381,7 @@ const stateColors: Record<string, string> = {
 };
 
 const predictionBasisLabels: Record<string, string> = {
+  static_habit: '静态习惯',
   driving: '行驶中',
   charging: '充电中',
   asleep: '休眠',
@@ -1022,7 +1029,8 @@ function App() {
   const renderTodayEnergyChart = () => {
     const energy = dashboard?.today_energy;
     const basis = energy?.prediction_basis ? (predictionBasisLabels[energy.prediction_basis] ?? labelState(energy.prediction_basis)) : '状态未知';
-    const aside = `${basis} · 最近 ${energy?.history_days ?? 30} 天均值${energy?.prediction_confidence === 'low' ? ' · 样本较少' : ''}`;
+    const habitDays = energy?.static_history_days;
+    const aside = `${basis} · 最近 ${energy?.history_days ?? 30} 天${habitDays ? ` · ${habitDays} 天静态样本` : ''}${energy?.prediction_confidence === 'low' ? ' · 样本较少' : ''}`;
 
     return (
       <Section title="今日电量预测" icon={<BatteryCharging size={18} />} aside={aside}>

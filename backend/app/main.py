@@ -140,6 +140,25 @@ def add_hourly_energy(
         cursor = next_hour
 
 
+def add_hourly_duration(
+    buckets: list[float],
+    start_local: datetime,
+    end_local: datetime,
+    window_start: datetime,
+    window_end: datetime,
+) -> None:
+    start = max(start_local, window_start)
+    end = min(end_local, window_end)
+    if end <= start:
+        return
+
+    cursor = start
+    while cursor < end:
+        next_hour = min(hour_start(cursor) + timedelta(hours=1), end)
+        buckets[cursor.hour] += (next_hour - cursor).total_seconds() / 3600
+        cursor = next_hour
+
+
 def today_energy(car_id: int, car: dict[str, Any]) -> dict[str, Any]:
     tz = display_zone()
     now_local = datetime.now(tz)
@@ -186,6 +205,28 @@ def today_energy(car_id: int, car: dict[str, Any]) -> dict[str, Any]:
         """,
         (car_id, history_start_utc, tomorrow_start_utc, now_utc + timedelta(minutes=5)),
     )
+    state_rows = fetch_all(
+        """
+        select
+            s.state::text as state,
+            greatest(s.start_date, %s::timestamp) as start_date,
+            least(coalesce(s.end_date, %s::timestamp), %s::timestamp) as end_date
+        from public.states s
+        where s.car_id = %s
+          and s.start_date < %s::timestamp
+          and coalesce(s.end_date, %s::timestamp) > %s::timestamp
+        order by s.start_date asc
+        """,
+        (
+            history_start_utc,
+            today_start_utc,
+            today_start_utc,
+            car_id,
+            today_start_utc,
+            today_start_utc,
+            history_start_utc,
+        ),
+    )
 
     efficiency = to_float(car.get("efficiency"))
     actual_by_hour = [0.0 for _ in range(24)]
@@ -205,6 +246,12 @@ def today_energy(car_id: int, car: dict[str, Any]) -> dict[str, Any]:
         "awake": [0.0 for _ in range(24)],
         "unknown": [0.0 for _ in range(24)],
     }
+    static_habit_hours: dict[str, list[float]] = {
+        "asleep": [0.0 for _ in range(24)],
+        "awake": [0.0 for _ in range(24)],
+        "unknown": [0.0 for _ in range(24)],
+    }
+    static_habit_days: set[date] = set()
 
     latest_row: dict[str, Any] | None = rows[-1] if rows else None
 
@@ -220,15 +267,22 @@ def today_energy(car_id: int, car: dict[str, Any]) -> dict[str, Any]:
         speed = to_float(row.get("speed")) or 0
         return row.get("drive_id") is not None or speed > 1
 
+    def static_key_from_state(state: Any) -> str | None:
+        if state == "asleep":
+            return "asleep"
+        if state == "driving" or state == "charging":
+            return None
+        if state:
+            return "awake"
+        return "unknown"
+
     def bucket_key(row: dict[str, Any]) -> str:
         if is_moving(row):
             return "drive"
         state = row.get("state")
-        if state == "asleep":
-            return "asleep"
-        if state:
-            return "awake"
-        return "unknown"
+        if state == "charging":
+            return "charging"
+        return static_key_from_state(state) or "unknown"
 
     def add_history(key: str, start_local: datetime, end_local: datetime, kwh: float, hours: float) -> None:
         cursor = start_local
@@ -240,6 +294,37 @@ def today_energy(car_id: int, car: dict[str, Any]) -> dict[str, Any]:
                 history_hours[key][cursor.hour] += portion
             cursor = next_hour
 
+    def add_static_habit(key: str, start_local: datetime, end_local: datetime) -> None:
+        if key not in static_habit_hours:
+            return
+        start = max(start_local, history_start_local)
+        end = min(end_local, today_start_local)
+        if end <= start:
+            return
+
+        add_hourly_duration(static_habit_hours[key], start, end, history_start_local, today_start_local)
+        cursor = start.date()
+        last_day = (end - timedelta(microseconds=1)).date()
+        while cursor <= last_day:
+            static_habit_days.add(cursor)
+            cursor += timedelta(days=1)
+
+    for state_row in state_rows:
+        state_start = state_row.get("start_date")
+        state_end = state_row.get("end_date")
+        if not isinstance(state_start, datetime) or not isinstance(state_end, datetime):
+            continue
+
+        key = static_key_from_state(state_row.get("state"))
+        if not key:
+            continue
+
+        add_static_habit(
+            key,
+            as_utc(state_start).astimezone(tz),
+            as_utc(state_end).astimezone(tz),
+        )
+
     for previous, current in zip(rows, rows[1:]):
         previous_date = previous.get("date")
         current_date = current.get("date")
@@ -250,21 +335,25 @@ def today_energy(car_id: int, car: dict[str, Any]) -> dict[str, Any]:
         if duration_hours <= 0 or duration_hours > MAX_TODAY_ENERGY_SEGMENT_HOURS:
             continue
 
-        previous_range = range_km(previous)
-        current_range = range_km(current)
-        if not efficiency or previous_range is None or current_range is None:
-            continue
-
-        consumed_kwh = max((previous_range - current_range) * efficiency, 0)
-        if consumed_kwh <= 0:
-            continue
-
         start_local = as_utc(previous_date).astimezone(tz)
         end_local = as_utc(current_date).astimezone(tz)
         if end_local <= history_start_local or start_local >= tomorrow_start_local:
             continue
 
         key = bucket_key(current)
+
+        if not state_rows and start_local < today_start_local:
+            add_static_habit(key, start_local, min(end_local, today_start_local))
+
+        previous_range = range_km(previous)
+        current_range = range_km(current)
+        if not efficiency or previous_range is None or current_range is None:
+            continue
+
+        consumed_kwh = max((previous_range - current_range) * efficiency, 0)
+        if key not in history_kwh:
+            continue
+
         rate = consumed_kwh / duration_hours
 
         if start_local < today_start_local:
@@ -296,35 +385,44 @@ def today_energy(car_id: int, car: dict[str, Any]) -> dict[str, Any]:
             return total_kwh / total_hours
         return None
 
+    def first_rate(*values: float | None) -> float | None:
+        for value in values:
+            if value is not None:
+                return value
+        return None
+
     parked_global = global_rate("asleep", "awake", "unknown")
-    asleep_global = global_rate("asleep") or parked_global
-    awake_global = global_rate("awake") or parked_global
-    unknown_global = global_rate("unknown") or parked_global
-    drive_global = global_rate("drive")
+    asleep_global = first_rate(global_rate("asleep"), parked_global)
+    awake_global = first_rate(global_rate("awake"), parked_global)
+    unknown_global = first_rate(global_rate("unknown"), parked_global)
 
     latest_state = str(car.get("current_state") or (latest_row.get("state") if latest_row else "") or "")
-    latest_moving = bool(car.get("current_state") == "driving" or (latest_row and is_moving(latest_row)))
     latest_charging = bool(car.get("current_state") == "charging")
-    if latest_moving:
-        prediction_basis = "driving"
-    elif latest_charging:
-        prediction_basis = "charging"
-    elif latest_state == "asleep":
-        prediction_basis = "asleep"
-    else:
-        prediction_basis = "awake"
+    prediction_basis = "charging" if latest_charging else "static_habit"
 
     predicted_drive = [0.0 for _ in range(24)]
     predicted_asleep = [0.0 for _ in range(24)]
     predicted_awake = [0.0 for _ in range(24)]
     predicted_unknown = [0.0 for _ in range(24)]
 
-    def parked_rate(hour: int) -> tuple[str, float | None]:
-        if latest_state == "asleep":
-            return "asleep", hourly_rate("asleep", hour) or asleep_global
-        if latest_state:
-            return "awake", hourly_rate("awake", hour) or awake_global
-        return "unknown", hourly_rate("unknown", hour) or unknown_global
+    def static_global_share(key: str) -> float:
+        total = sum(sum(static_habit_hours[item]) for item in static_habit_hours)
+        if total <= 0:
+            return 0.0
+        return sum(static_habit_hours[key]) / total
+
+    def static_hour_share(key: str, hour: int) -> float:
+        total = sum(static_habit_hours[item][hour] for item in static_habit_hours)
+        if total >= 0.25:
+            return static_habit_hours[key][hour] / total
+        return static_global_share(key)
+
+    def static_rate(key: str, hour: int) -> float | None:
+        if key == "asleep":
+            return first_rate(hourly_rate("asleep", hour), asleep_global, parked_global)
+        if key == "awake":
+            return first_rate(hourly_rate("awake", hour), awake_global, parked_global)
+        return first_rate(hourly_rate("unknown", hour), unknown_global, parked_global)
 
     for hour in range(24):
         start = today_start_local + timedelta(hours=hour)
@@ -336,24 +434,18 @@ def today_energy(car_id: int, car: dict[str, Any]) -> dict[str, Any]:
         if remaining_hours <= 0:
             continue
 
-        if latest_moving and hour == now_local.hour:
-            rate = hourly_rate("drive", hour) or drive_global or hourly_rate("awake", hour) or awake_global or parked_global
-            if rate:
-                predicted_drive[hour] = rate * remaining_hours
-            continue
-
         if latest_charging and hour == now_local.hour:
             continue
 
-        key, rate = parked_rate(hour)
-        if not rate:
-            continue
-        if key == "asleep":
-            predicted_asleep[hour] = rate * remaining_hours
-        elif key == "awake":
-            predicted_awake[hour] = rate * remaining_hours
-        else:
-            predicted_unknown[hour] = rate * remaining_hours
+        for key, target in (
+            ("asleep", predicted_asleep),
+            ("awake", predicted_awake),
+            ("unknown", predicted_unknown),
+        ):
+            share = static_hour_share(key, hour)
+            rate = static_rate(key, hour)
+            if share > 0 and rate is not None:
+                target[hour] = rate * share * remaining_hours
 
     latest_battery_level = battery_level(latest_row) or to_float(car.get("battery_level")) or to_float(car.get("usable_battery_level"))
     latest_range_km = (range_km(latest_row) if latest_row else None) or to_float(car.get("rated_battery_range_km")) or to_float(car.get("ideal_battery_range_km"))
@@ -442,12 +534,9 @@ def today_energy(car_id: int, car: dict[str, Any]) -> dict[str, Any]:
         "awake": sum(history_hours["awake"]),
         "unknown": sum(history_hours["unknown"]),
     }
-    has_basis_samples = (
-        (prediction_basis == "driving" and source_hours["drive"] >= 0.5)
-        or (prediction_basis == "asleep" and source_hours["asleep"] >= 0.5)
-        or (prediction_basis == "awake" and source_hours["awake"] >= 0.5)
-        or (prediction_basis == "charging" and sum(source_hours.values()) >= 0.5)
-    )
+    static_source_hours = sum(source_hours[key] for key in ("asleep", "awake", "unknown"))
+    static_habit_source_hours = sum(sum(static_habit_hours[key]) for key in static_habit_hours)
+    has_basis_samples = static_source_hours >= 0.5 and static_habit_source_hours >= 6
 
     return {
         "timezone": settings.display_timezone,
@@ -457,6 +546,11 @@ def today_energy(car_id: int, car: dict[str, Any]) -> dict[str, Any]:
         "state": latest_state or None,
         "prediction_basis": prediction_basis,
         "prediction_confidence": "normal" if has_basis_samples else "low",
+        "static_history_days": len(static_habit_days),
+        "static_history_hours": {
+            key: sum(static_habit_hours[key])
+            for key in static_habit_hours
+        },
         "current_battery_level": latest_battery_level,
         "estimated_end_battery_level": predicted_level_at(24),
         "actual_kwh": actual_total,
