@@ -580,6 +580,10 @@ main {
   margin-bottom: 12px;
 }
 
+.today-energy-kpis-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .today-energy-kpis div {
   min-width: 0;
   padding: 12px 14px;

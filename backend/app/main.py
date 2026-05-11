@@ -112,6 +112,10 @@ def to_float(value: Any) -> float | None:
         return None
 
 
+def clamp(value: float, low: float, high: float) -> float:
+    return min(max(value, low), high)
+
+
 def hour_start(value: datetime) -> datetime:
     return value.replace(minute=0, second=0, microsecond=0)
 
@@ -173,7 +177,11 @@ def today_energy(car_id: int, car: dict[str, Any]) -> dict[str, Any]:
         where p.car_id = %s
           and p.date >= %s::timestamp
           and p.date < least(%s::timestamp, %s::timestamp)
-          and (p.rated_battery_range_km is not null or p.ideal_battery_range_km is not null)
+          and (
+              p.battery_level is not null
+              or p.rated_battery_range_km is not null
+              or p.ideal_battery_range_km is not null
+          )
         order by p.date asc
         """,
         (car_id, history_start_utc, tomorrow_start_utc, now_utc + timedelta(minutes=5)),
@@ -202,6 +210,11 @@ def today_energy(car_id: int, car: dict[str, Any]) -> dict[str, Any]:
 
     def range_km(row: dict[str, Any]) -> float | None:
         return to_float(row.get("rated_battery_range_km")) or to_float(row.get("ideal_battery_range_km"))
+
+    def battery_level(row: dict[str, Any] | None) -> float | None:
+        if not row:
+            return None
+        return to_float(row.get("battery_level")) or to_float(row.get("usable_battery_level"))
 
     def is_moving(row: dict[str, Any]) -> bool:
         speed = to_float(row.get("speed")) or 0
@@ -342,23 +355,79 @@ def today_energy(car_id: int, car: dict[str, Any]) -> dict[str, Any]:
         else:
             predicted_unknown[hour] = rate * remaining_hours
 
+    latest_battery_level = battery_level(latest_row) or to_float(car.get("battery_level")) or to_float(car.get("usable_battery_level"))
+    latest_range_km = (range_km(latest_row) if latest_row else None) or to_float(car.get("rated_battery_range_km")) or to_float(car.get("ideal_battery_range_km"))
+    kwh_per_percent = None
+    if efficiency and latest_range_km and latest_battery_level and latest_battery_level > 0:
+        kwh_per_percent = latest_range_km * efficiency / latest_battery_level
+
+    battery_samples = [
+        {
+            "date": row["date"],
+            "level": battery_level(row),
+        }
+        for row in rows
+        if isinstance(row.get("date"), datetime) and battery_level(row) is not None
+    ]
+
+    def actual_level_at(marker_local: datetime) -> float | None:
+        if not battery_samples:
+            return None
+        marker_utc = utc_naive(marker_local)
+        level = None
+        for sample in battery_samples:
+            if sample["date"] <= marker_utc:
+                level = sample["level"]
+            else:
+                break
+        return level
+
+    current_hour = now_local.hour
+
+    def predicted_energy_until(hour: int) -> float:
+        end_hour = min(max(hour, 0), 24)
+        if end_hour <= current_hour:
+            return 0.0
+        return sum(
+            predicted_drive[index] + predicted_asleep[index] + predicted_awake[index] + predicted_unknown[index]
+            for index in range(current_hour, end_hour)
+        )
+
+    def predicted_level_at(hour: int) -> float | None:
+        if latest_battery_level is None or hour < current_hour:
+            return None
+        predicted_kwh = predicted_energy_until(hour)
+        if not kwh_per_percent:
+            return latest_battery_level if predicted_kwh == 0 else None
+        return clamp(latest_battery_level - predicted_kwh / kwh_per_percent, 0, 100)
+
     points = []
-    for hour in range(24):
-        predicted_kwh = predicted_drive[hour] + predicted_asleep[hour] + predicted_awake[hour] + predicted_unknown[hour]
+    for hour in range(25):
+        predicted_kwh = (
+            predicted_drive[hour] + predicted_asleep[hour] + predicted_awake[hour] + predicted_unknown[hour]
+            if hour < 24
+            else 0.0
+        )
+        marker_local = today_start_local + timedelta(hours=hour)
+        actual_battery_level = latest_battery_level if hour == current_hour else actual_level_at(marker_local)
+        if marker_local > now_local and hour != current_hour:
+            actual_battery_level = None
         points.append(
             {
                 "hour": hour,
                 "label": f"{hour:02d}:00",
-                "actual_kwh": actual_by_hour[hour],
-                "actual_drive_kwh": actual_drive_by_hour[hour],
-                "actual_asleep_kwh": actual_asleep_by_hour[hour],
-                "actual_awake_kwh": actual_awake_by_hour[hour],
-                "actual_unknown_kwh": actual_unknown_by_hour[hour],
+                "actual_battery_level": actual_battery_level,
+                "predicted_battery_level": predicted_level_at(hour),
+                "actual_kwh": actual_by_hour[hour] if hour < 24 else 0.0,
+                "actual_drive_kwh": actual_drive_by_hour[hour] if hour < 24 else 0.0,
+                "actual_asleep_kwh": actual_asleep_by_hour[hour] if hour < 24 else 0.0,
+                "actual_awake_kwh": actual_awake_by_hour[hour] if hour < 24 else 0.0,
+                "actual_unknown_kwh": actual_unknown_by_hour[hour] if hour < 24 else 0.0,
                 "predicted_kwh": predicted_kwh,
-                "predicted_drive_kwh": predicted_drive[hour],
-                "predicted_asleep_kwh": predicted_asleep[hour],
-                "predicted_awake_kwh": predicted_awake[hour],
-                "predicted_unknown_kwh": predicted_unknown[hour],
+                "predicted_drive_kwh": predicted_drive[hour] if hour < 24 else 0.0,
+                "predicted_asleep_kwh": predicted_asleep[hour] if hour < 24 else 0.0,
+                "predicted_awake_kwh": predicted_awake[hour] if hour < 24 else 0.0,
+                "predicted_unknown_kwh": predicted_unknown[hour] if hour < 24 else 0.0,
             }
         )
 
@@ -388,6 +457,8 @@ def today_energy(car_id: int, car: dict[str, Any]) -> dict[str, Any]:
         "state": latest_state or None,
         "prediction_basis": prediction_basis,
         "prediction_confidence": "normal" if has_basis_samples else "low",
+        "current_battery_level": latest_battery_level,
+        "estimated_end_battery_level": predicted_level_at(24),
         "actual_kwh": actual_total,
         "predicted_remaining_kwh": predicted_total,
         "estimated_total_kwh": actual_total + predicted_total,

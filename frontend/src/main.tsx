@@ -162,6 +162,8 @@ type RangePoint = {
 type TodayEnergyPoint = {
   hour: number;
   label: string;
+  actual_battery_level?: number | null;
+  predicted_battery_level?: number | null;
   actual_kwh?: number | null;
   actual_drive_kwh?: number | null;
   actual_asleep_kwh?: number | null;
@@ -182,6 +184,8 @@ type TodayEnergy = {
   state?: string | null;
   prediction_basis?: string | null;
   prediction_confidence?: string | null;
+  current_battery_level?: number | null;
+  estimated_end_battery_level?: number | null;
   actual_kwh?: number | null;
   predicted_remaining_kwh?: number | null;
   estimated_total_kwh?: number | null;
@@ -388,11 +392,6 @@ function km(value: number | null | undefined): string {
 
 function kwh(value: number | null | undefined): string {
   return value === null || value === undefined ? '—' : `${numberFormat.format(value)} kWh`;
-}
-
-function preciseKwh(value: number | null | undefined): string {
-  if (value === null || value === undefined) return '—';
-  return `${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(value)} kWh`;
 }
 
 function percent(value: number | null | undefined): string {
@@ -895,29 +894,16 @@ function App() {
     () =>
       (dashboard?.today_energy?.points ?? []).map((item) => ({
         ...item,
-        hourLabel: String(item.hour).padStart(2, '0'),
-        actual_kwh: Number((item.actual_kwh ?? 0).toFixed(2)),
-        actual_drive_kwh: Number((item.actual_drive_kwh ?? 0).toFixed(2)),
-        actual_asleep_kwh: Number((item.actual_asleep_kwh ?? 0).toFixed(2)),
-        actual_awake_kwh: Number((item.actual_awake_kwh ?? 0).toFixed(2)),
-        actual_unknown_kwh: Number((item.actual_unknown_kwh ?? 0).toFixed(2)),
-        predicted_drive_kwh: Number((item.predicted_drive_kwh ?? 0).toFixed(2)),
-        predicted_asleep_kwh: Number((item.predicted_asleep_kwh ?? 0).toFixed(2)),
-        predicted_awake_kwh: Number((item.predicted_awake_kwh ?? 0).toFixed(2)),
-        predicted_unknown_kwh: Number((item.predicted_unknown_kwh ?? 0).toFixed(2))
+        hourLabel: item.hour === 24 ? '24' : String(item.hour).padStart(2, '0'),
+        actual_battery_level:
+          item.actual_battery_level === null || item.actual_battery_level === undefined ? null : Number(item.actual_battery_level.toFixed(1)),
+        predicted_battery_level:
+          item.predicted_battery_level === null || item.predicted_battery_level === undefined ? null : Number(item.predicted_battery_level.toFixed(1))
       })),
     [dashboard]
   );
   const todayEnergyHasData = todayEnergyPoints.some(
-    (item) =>
-      item.actual_drive_kwh ||
-      item.actual_asleep_kwh ||
-      item.actual_awake_kwh ||
-      item.actual_unknown_kwh ||
-      item.predicted_drive_kwh ||
-      item.predicted_asleep_kwh ||
-      item.predicted_awake_kwh ||
-      item.predicted_unknown_kwh
+    (item) => item.actual_battery_level !== null || item.predicted_battery_level !== null
   );
   const reportItems: Array<{ key: ReportKey; label: string; icon: React.ReactNode }> = [
     { key: 'overview', label: '概览', icon: <Activity size={17} /> },
@@ -1039,19 +1025,11 @@ function App() {
     const aside = `${basis} · 最近 ${energy?.history_days ?? 30} 天均值${energy?.prediction_confidence === 'low' ? ' · 样本较少' : ''}`;
 
     return (
-      <Section title="今日电量消耗" icon={<BatteryCharging size={18} />} aside={aside}>
-        <div className="today-energy-kpis">
+      <Section title="今日电量预测" icon={<BatteryCharging size={18} />} aside={aside}>
+        <div className="today-energy-kpis today-energy-kpis-single">
           <div>
-            <span>已消耗</span>
-            <strong>{preciseKwh(energy?.actual_kwh)}</strong>
-          </div>
-          <div>
-            <span>预计剩余</span>
-            <strong>{preciseKwh(energy?.predicted_remaining_kwh)}</strong>
-          </div>
-          <div>
-            <span>预计全天</span>
-            <strong>{preciseKwh(energy?.estimated_total_kwh)}</strong>
+            <span>预计今日结束电量</span>
+            <strong>{percent(energy?.estimated_end_battery_level)}</strong>
           </div>
         </div>
 
@@ -1059,37 +1037,29 @@ function App() {
           <>
             <div className="chart chart-compact today-energy-chart">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={todayEnergyPoints} margin={{ top: 10, right: 8, bottom: 0, left: -20 }}>
+                <LineChart data={todayEnergyPoints} margin={{ top: 10, right: 10, bottom: 0, left: -16 }}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="hourLabel" tickLine={false} axisLine={false} interval={2} />
-                  <YAxis tickLine={false} axisLine={false} width={40} />
+                  <YAxis tickLine={false} axisLine={false} width={38} domain={[0, 100]} tickFormatter={(value) => `${value}%`} />
                   <Tooltip
                     formatter={chartTooltipFormatter({
-                      actual_kwh: { label: '已消耗', format: preciseKwh },
-                      predicted_drive_kwh: { label: '预计行驶', format: preciseKwh },
-                      predicted_asleep_kwh: { label: '预计休眠', format: preciseKwh },
-                      predicted_awake_kwh: { label: '预计未休眠', format: preciseKwh },
-                      predicted_unknown_kwh: { label: '预计未知', format: preciseKwh }
+                      actual_battery_level: { label: '实际电量', format: percent },
+                      predicted_battery_level: { label: '预测电量', format: percent }
                     })}
                     labelFormatter={(label) => `${label}:00`}
                   />
-                  <Bar dataKey="actual_kwh" stackId="energy" fill="#171a20" radius={[3, 3, 0, 0]} name="actual_kwh" />
-                  <Bar dataKey="predicted_drive_kwh" stackId="energy" fill="#8da2fb" radius={[3, 3, 0, 0]} name="predicted_drive_kwh" />
-                  <Bar dataKey="predicted_asleep_kwh" stackId="energy" fill="#94a3b8" radius={[3, 3, 0, 0]} name="predicted_asleep_kwh" />
-                  <Bar dataKey="predicted_awake_kwh" stackId="energy" fill="#3e6ae1" fillOpacity={0.62} radius={[3, 3, 0, 0]} name="predicted_awake_kwh" />
-                  <Bar dataKey="predicted_unknown_kwh" stackId="energy" fill="#d8d9da" radius={[3, 3, 0, 0]} name="predicted_unknown_kwh" />
-                </BarChart>
+                  <Line type="monotone" dataKey="actual_battery_level" stroke="#171a20" strokeWidth={2.4} dot={false} connectNulls={false} name="实际电量" />
+                  <Line type="monotone" dataKey="predicted_battery_level" stroke="#3e6ae1" strokeWidth={2.4} strokeDasharray="6 4" dot={false} connectNulls={false} name="预测电量" />
+                </LineChart>
               </ResponsiveContainer>
             </div>
-            <div className="energy-legend" aria-label="今日电量消耗图例">
-              <span><i style={{ background: '#171a20' }} />已消耗</span>
-              <span><i style={{ background: '#8da2fb' }} />预计行驶</span>
-              <span><i style={{ background: '#94a3b8' }} />预计休眠</span>
-              <span><i style={{ background: '#3e6ae1' }} />预计未休眠</span>
+            <div className="energy-legend" aria-label="今日电量预测图例">
+              <span><i style={{ background: '#171a20' }} />实际电量</span>
+              <span><i style={{ background: '#3e6ae1' }} />预测电量</span>
             </div>
           </>
         ) : (
-          <Empty text="暂无可计算的今日能耗采样" />
+          <Empty text="暂无可计算的今日电量采样" />
         )}
       </Section>
     );
