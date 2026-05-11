@@ -167,7 +167,7 @@ sudo docker compose up -d
 | `ALIYUN_REGISTRY_USER` | 仓库用户名 |
 | `ALIYUN_REGISTRY_PASSWORD` | 仓库密码或访问凭证 |
 
-手工运行 `Build and Push Images`，填写镜像 tag。`.env` 中的 `IMAGE_TAG` 要和推送的 tag 一致。
+提交到 `main` 后会自动运行 `Build and Push Images`，并把本项目镜像推送为 `latest`。默认 `.env` 中的 `IMAGE_TAG=latest` 可直接匹配该发布流程。
 
 ## 开发
 

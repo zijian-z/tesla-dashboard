@@ -1,12 +1,9 @@
 name: Build and Push Images
 
 "on":
-  workflow_dispatch:
-    inputs:
-      image_tag:
-        description: "Docker image tag to publish"
-        required: true
-        default: "latest"
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -50,14 +47,12 @@ jobs:
           REGISTRY: ${{ secrets.ALIYUN_REGISTRY }}
           NAMESPACE: ${{ secrets.ALIYUN_NAME_SPACE }}
           IMAGE: ${{ matrix.image }}
-          IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
           set -euo pipefail
-          VERSION="${IMAGE_TAG:-latest}"
 
           {
             echo "tags<<EOF"
-            echo "${REGISTRY}/${NAMESPACE}/${IMAGE}:${VERSION}"
+            echo "${REGISTRY}/${NAMESPACE}/${IMAGE}:latest"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
