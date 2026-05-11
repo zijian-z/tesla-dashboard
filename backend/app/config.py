@@ -15,6 +15,7 @@ class Settings:
     db_pool_min_size: int
     db_pool_max_size: int
     cors_origins: tuple[str, ...]
+    display_timezone: str
 
 
 def _int_env(name: str, default: int) -> int:
@@ -53,4 +54,5 @@ def get_settings() -> Settings:
         db_pool_min_size=_int_env("DB_POOL_MIN_SIZE", 1),
         db_pool_max_size=_int_env("DB_POOL_MAX_SIZE", 5),
         cors_origins=_csv_env("CORS_ORIGINS"),
+        display_timezone=os.getenv("DISPLAY_TIME_ZONE", os.getenv("TZ", "Asia/Shanghai")),
     )

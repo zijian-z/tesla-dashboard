@@ -573,6 +573,63 @@ main {
   border: 0;
 }
 
+.today-energy-kpis {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.today-energy-kpis div {
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid #e2e3e3;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.today-energy-kpis span {
+  display: block;
+  margin-bottom: 5px;
+  color: #5c5e62;
+  font-size: 12px;
+}
+
+.today-energy-kpis strong {
+  display: block;
+  overflow-wrap: anywhere;
+  color: #171a20;
+  font-size: 22px;
+  font-weight: 760;
+  line-height: 1.12;
+}
+
+.today-energy-chart {
+  margin-top: 0;
+}
+
+.energy-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 9px;
+  color: #5c5e62;
+  font-size: 12px;
+}
+
+.energy-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.energy-legend i {
+  display: block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
 .split-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -861,6 +918,7 @@ main {
   .metrics-grid-compact,
   .bottom-grid,
   .split-grid,
+  .today-energy-kpis,
   .location-list-wide {
     grid-template-columns: 1fr;
   }

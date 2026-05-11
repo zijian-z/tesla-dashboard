@@ -159,6 +159,41 @@ type RangePoint = {
   odometer?: number | null;
 };
 
+type TodayEnergyPoint = {
+  hour: number;
+  label: string;
+  actual_kwh?: number | null;
+  actual_drive_kwh?: number | null;
+  actual_asleep_kwh?: number | null;
+  actual_awake_kwh?: number | null;
+  actual_unknown_kwh?: number | null;
+  predicted_kwh?: number | null;
+  predicted_drive_kwh?: number | null;
+  predicted_asleep_kwh?: number | null;
+  predicted_awake_kwh?: number | null;
+  predicted_unknown_kwh?: number | null;
+};
+
+type TodayEnergy = {
+  timezone?: string | null;
+  generated_at?: string | null;
+  as_of?: string | null;
+  history_days?: number | null;
+  state?: string | null;
+  prediction_basis?: string | null;
+  prediction_confidence?: string | null;
+  actual_kwh?: number | null;
+  predicted_remaining_kwh?: number | null;
+  estimated_total_kwh?: number | null;
+  history_hours?: {
+    drive?: number;
+    asleep?: number;
+    awake?: number;
+    unknown?: number;
+  };
+  points: TodayEnergyPoint[];
+};
+
 type RoutePoint = {
   sampled_at?: string | null;
   latitude?: number | null;
@@ -267,6 +302,7 @@ type Dashboard = {
   lifetime: Lifetime;
   daily: DayPoint[];
   monthly: MonthPoint[];
+  today_energy?: TodayEnergy | null;
   states: StatePoint[];
   range: RangePoint[];
   insights: Insights;
@@ -291,6 +327,7 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? defaultApiBase;
 const AUTO_REFRESH_MS = 60_000;
 const DEFAULT_MAP_TILE_URL = 'https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x={x}&y={y}&z={z}';
 const MAP_TILE_URL = String(import.meta.env.VITE_MAP_TILE_URL || DEFAULT_MAP_TILE_URL);
+const DISPLAY_TIME_ZONE = String(import.meta.env.VITE_DISPLAY_TIME_ZONE || 'Asia/Shanghai');
 const MAP_TILE_SUBDOMAINS = String(import.meta.env.VITE_MAP_TILE_SUBDOMAINS || '1,2,3,4')
   .split(',')
   .map((item) => item.trim())
@@ -333,6 +370,13 @@ const stateColors: Record<string, string> = {
   driving: '#2563eb'
 };
 
+const predictionBasisLabels: Record<string, string> = {
+  driving: '行驶中',
+  charging: '充电中',
+  asleep: '休眠',
+  awake: '未休眠'
+};
+
 function n(value: number | null | undefined, digits = 1): string {
   if (value === null || value === undefined || Number.isNaN(value)) return '—';
   return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: digits }).format(value);
@@ -344,6 +388,11 @@ function km(value: number | null | undefined): string {
 
 function kwh(value: number | null | undefined): string {
   return value === null || value === undefined ? '—' : `${numberFormat.format(value)} kWh`;
+}
+
+function preciseKwh(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '—';
+  return `${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(value)} kWh`;
 }
 
 function percent(value: number | null | undefined): string {
@@ -358,14 +407,37 @@ function minutes(value: number | null | undefined): string {
   return mins ? `${hours} 小时 ${mins} 分钟` : `${hours} 小时`;
 }
 
+function parseApiDate(value?: string | null): Date | null {
+  if (!value) return null;
+  const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+  const hasTimezone = /(?:z|[+-]\d{2}:?\d{2})$/i.test(value);
+  const normalized = !isDateOnly && !hasTimezone ? `${value}Z` : value;
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function displayDateInput(date: Date): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: DISPLAY_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(date);
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${value.year}-${value.month}-${value.day}`;
+}
+
 function shortDate(value?: string | null): string {
-  if (!value) return '—';
-  return new Date(value).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
+  const date = parseApiDate(value);
+  if (!date) return '—';
+  return date.toLocaleDateString('zh-CN', { timeZone: DISPLAY_TIME_ZONE, month: '2-digit', day: '2-digit' });
 }
 
 function dateTime(value?: string | null): string {
-  if (!value) return '—';
-  return new Date(value).toLocaleString('zh-CN', {
+  const date = parseApiDate(value);
+  if (!date) return '—';
+  return date.toLocaleString('zh-CN', {
+    timeZone: DISPLAY_TIME_ZONE,
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
@@ -374,24 +446,21 @@ function dateTime(value?: string | null): string {
 }
 
 function dateInput(value?: string | null): string {
-  if (!value) return '';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  const date = parseApiDate(value);
+  return date ? displayDateInput(date) : '';
 }
 
 function shiftDateInput(value: string, days: number): string {
-  const date = value ? new Date(`${value}T00:00:00`) : new Date();
-  date.setDate(date.getDate() + days);
-  return dateInput(date.toISOString());
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return displayDateInput(new Date());
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]) + days));
+  return date.toISOString().slice(0, 10);
 }
 
 function monthLabel(value?: string | null): string {
-  if (!value) return '—';
-  return new Date(value).toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit' });
+  const date = parseApiDate(value);
+  if (!date) return '—';
+  return date.toLocaleDateString('zh-CN', { timeZone: DISPLAY_TIME_ZONE, year: 'numeric', month: '2-digit' });
 }
 
 function labelState(value?: string | null): string {
@@ -822,6 +891,34 @@ function App() {
       })),
     [dashboard]
   );
+  const todayEnergyPoints = React.useMemo(
+    () =>
+      (dashboard?.today_energy?.points ?? []).map((item) => ({
+        ...item,
+        hourLabel: String(item.hour).padStart(2, '0'),
+        actual_kwh: Number((item.actual_kwh ?? 0).toFixed(2)),
+        actual_drive_kwh: Number((item.actual_drive_kwh ?? 0).toFixed(2)),
+        actual_asleep_kwh: Number((item.actual_asleep_kwh ?? 0).toFixed(2)),
+        actual_awake_kwh: Number((item.actual_awake_kwh ?? 0).toFixed(2)),
+        actual_unknown_kwh: Number((item.actual_unknown_kwh ?? 0).toFixed(2)),
+        predicted_drive_kwh: Number((item.predicted_drive_kwh ?? 0).toFixed(2)),
+        predicted_asleep_kwh: Number((item.predicted_asleep_kwh ?? 0).toFixed(2)),
+        predicted_awake_kwh: Number((item.predicted_awake_kwh ?? 0).toFixed(2)),
+        predicted_unknown_kwh: Number((item.predicted_unknown_kwh ?? 0).toFixed(2))
+      })),
+    [dashboard]
+  );
+  const todayEnergyHasData = todayEnergyPoints.some(
+    (item) =>
+      item.actual_drive_kwh ||
+      item.actual_asleep_kwh ||
+      item.actual_awake_kwh ||
+      item.actual_unknown_kwh ||
+      item.predicted_drive_kwh ||
+      item.predicted_asleep_kwh ||
+      item.predicted_awake_kwh ||
+      item.predicted_unknown_kwh
+  );
   const reportItems: Array<{ key: ReportKey; label: string; icon: React.ReactNode }> = [
     { key: 'overview', label: '概览', icon: <Activity size={17} /> },
     { key: 'trends', label: '趋势', icon: <ChartNoAxesColumn size={17} /> },
@@ -935,6 +1032,68 @@ function App() {
       )}
     </Section>
   );
+
+  const renderTodayEnergyChart = () => {
+    const energy = dashboard?.today_energy;
+    const basis = energy?.prediction_basis ? (predictionBasisLabels[energy.prediction_basis] ?? labelState(energy.prediction_basis)) : '状态未知';
+    const aside = `${basis} · 最近 ${energy?.history_days ?? 30} 天均值${energy?.prediction_confidence === 'low' ? ' · 样本较少' : ''}`;
+
+    return (
+      <Section title="今日电量消耗" icon={<BatteryCharging size={18} />} aside={aside}>
+        <div className="today-energy-kpis">
+          <div>
+            <span>已消耗</span>
+            <strong>{preciseKwh(energy?.actual_kwh)}</strong>
+          </div>
+          <div>
+            <span>预计剩余</span>
+            <strong>{preciseKwh(energy?.predicted_remaining_kwh)}</strong>
+          </div>
+          <div>
+            <span>预计全天</span>
+            <strong>{preciseKwh(energy?.estimated_total_kwh)}</strong>
+          </div>
+        </div>
+
+        {todayEnergyHasData ? (
+          <>
+            <div className="chart chart-compact today-energy-chart">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={todayEnergyPoints} margin={{ top: 10, right: 8, bottom: 0, left: -20 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="hourLabel" tickLine={false} axisLine={false} interval={2} />
+                  <YAxis tickLine={false} axisLine={false} width={40} />
+                  <Tooltip
+                    formatter={chartTooltipFormatter({
+                      actual_kwh: { label: '已消耗', format: preciseKwh },
+                      predicted_drive_kwh: { label: '预计行驶', format: preciseKwh },
+                      predicted_asleep_kwh: { label: '预计休眠', format: preciseKwh },
+                      predicted_awake_kwh: { label: '预计未休眠', format: preciseKwh },
+                      predicted_unknown_kwh: { label: '预计未知', format: preciseKwh }
+                    })}
+                    labelFormatter={(label) => `${label}:00`}
+                  />
+                  <Bar dataKey="actual_kwh" stackId="energy" fill="#171a20" radius={[3, 3, 0, 0]} name="actual_kwh" />
+                  <Bar dataKey="predicted_drive_kwh" stackId="energy" fill="#8da2fb" radius={[3, 3, 0, 0]} name="predicted_drive_kwh" />
+                  <Bar dataKey="predicted_asleep_kwh" stackId="energy" fill="#94a3b8" radius={[3, 3, 0, 0]} name="predicted_asleep_kwh" />
+                  <Bar dataKey="predicted_awake_kwh" stackId="energy" fill="#3e6ae1" fillOpacity={0.62} radius={[3, 3, 0, 0]} name="predicted_awake_kwh" />
+                  <Bar dataKey="predicted_unknown_kwh" stackId="energy" fill="#d8d9da" radius={[3, 3, 0, 0]} name="predicted_unknown_kwh" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="energy-legend" aria-label="今日电量消耗图例">
+              <span><i style={{ background: '#171a20' }} />已消耗</span>
+              <span><i style={{ background: '#8da2fb' }} />预计行驶</span>
+              <span><i style={{ background: '#94a3b8' }} />预计休眠</span>
+              <span><i style={{ background: '#3e6ae1' }} />预计未休眠</span>
+            </div>
+          </>
+        ) : (
+          <Empty text="暂无可计算的今日能耗采样" />
+        )}
+      </Section>
+    );
+  };
 
   const renderMonthlyChart = () => (
     <Section title="月汇总" icon={<CalendarDays size={18} />}>
@@ -1217,6 +1376,8 @@ function App() {
             <Metric icon={<Clock3 size={20} />} label="日均里程" value={km(distancePerDay)} detail={periodText(dashboard?.data_window)} />
             <Metric icon={<BatteryCharging size={20} />} label="峰值充电功率" value={summary.max_charge_power_kw ? `${n(summary.max_charge_power_kw, 0)} kW` : '—'} detail={summary.fast_charge_count ? `${summary.fast_charge_count} 次快充` : undefined} />
           </section>
+
+          {renderTodayEnergyChart()}
         </>
       );
     }

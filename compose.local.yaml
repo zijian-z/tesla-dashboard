@@ -27,6 +27,7 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://teslamate:teslamate@db:5432/teslamate
+      DISPLAY_TIME_ZONE: Asia/Shanghai
       STATEMENT_TIMEOUT_MS: 15000
     depends_on:
       db:
