@@ -17,8 +17,10 @@ import {
   PlugZap,
   RefreshCw,
   Route,
+  SlidersHorizontal,
   Smartphone,
   Thermometer,
+  X,
   Zap
 } from 'lucide-react';
 import {
@@ -373,11 +375,11 @@ const stateLabels: Record<string, string> = {
 };
 
 const stateColors: Record<string, string> = {
-  online: '#0f766e',
-  asleep: '#64748b',
-  offline: '#b45309',
-  charging: '#d83a45',
-  driving: '#2563eb'
+  online: '#171a20',
+  asleep: '#8e8e8e',
+  offline: '#d0d1d2',
+  charging: '#3e6ae1',
+  driving: '#393c41'
 };
 
 const predictionBasisLabels: Record<string, string> = {
@@ -682,7 +684,7 @@ function RouteMap({ points, label }: { points?: RoutePoint[]; label: string }) {
         <TileLayer url={MAP_TILE_URL} subdomains={MAP_TILE_SUBDOMAINS} />
         <FitRoute positions={positions} />
         <Polyline positions={positions} pathOptions={{ color: '#3e6ae1', weight: 4, opacity: 0.88 }} />
-        <CircleMarker center={first} radius={5} pathOptions={{ color: '#ffffff', fillColor: '#2f7d32', fillOpacity: 1, weight: 2 }} />
+        <CircleMarker center={first} radius={5} pathOptions={{ color: '#ffffff', fillColor: '#3e6ae1', fillOpacity: 1, weight: 2 }} />
         <CircleMarker center={last} radius={5} pathOptions={{ color: '#ffffff', fillColor: '#171a20', fillOpacity: 1, weight: 2 }} />
       </MapContainer>
     </div>
@@ -748,7 +750,7 @@ function ChargePowerChart({ charge }: { charge: ChargeRecord }) {
             })}
             labelFormatter={(label) => `${label} 分钟`}
           />
-          <Bar yAxisId="left" dataKey="charger_power_kw" fill="#8da2fb" radius={[3, 3, 0, 0]} name="charger_power_kw" />
+          <Bar yAxisId="left" dataKey="charger_power_kw" fill="#d0d1d2" radius={[3, 3, 0, 0]} name="charger_power_kw" />
           <Line yAxisId="right" type="monotone" dataKey="battery_level" stroke="#171a20" strokeWidth={2} dot={false} name="battery_level" />
         </ComposedChart>
       </ResponsiveContainer>
@@ -768,6 +770,7 @@ function App() {
   const [refreshing, setRefreshing] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [refreshKey, setRefreshKey] = React.useState(0);
+  const [mobileControlsOpen, setMobileControlsOpen] = React.useState(false);
   const dashboardQuery = React.useMemo(() => {
     if (period === 'custom') {
       const params = new URLSearchParams();
@@ -871,7 +874,7 @@ function App() {
           ...item,
           label: labelState(item.state),
           value: Number(item.hours.toFixed(1)),
-          fill: stateColors[item.state] ?? '#475569'
+          fill: stateColors[item.state] ?? '#5c5e62'
         })),
     [dashboard]
   );
@@ -912,6 +915,10 @@ function App() {
   const todayEnergyHasData = todayEnergyPoints.some(
     (item) => item.actual_battery_level !== null || item.predicted_battery_level !== null
   );
+  const refreshDashboard = React.useCallback(() => {
+    setRefreshKey((key) => key + 1);
+    setMobileControlsOpen(false);
+  }, []);
   const reportItems: Array<{ key: ReportKey; label: string; icon: React.ReactNode }> = [
     { key: 'overview', label: '概览', icon: <Activity size={17} /> },
     { key: 'trends', label: '趋势', icon: <ChartNoAxesColumn size={17} /> },
@@ -939,12 +946,6 @@ function App() {
         <div className="chart chart-tall">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={daily} margin={{ top: 10, right: 10, bottom: 0, left: -18 }}>
-              <defs>
-                <linearGradient id="distanceFill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#0f766e" stopOpacity={0.28} />
-                  <stop offset="95%" stopColor="#0f766e" stopOpacity={0.02} />
-                </linearGradient>
-              </defs>
               <CartesianGrid strokeDasharray="3 3" vertical={false} />
               <XAxis dataKey="label" tickLine={false} axisLine={false} minTickGap={18} />
               <YAxis tickLine={false} axisLine={false} width={42} />
@@ -955,8 +956,8 @@ function App() {
                 })}
                 labelFormatter={(label) => `日期 ${label}`}
               />
-              <Area type="monotone" dataKey="distance_km" stroke="#0f766e" fill="url(#distanceFill)" strokeWidth={2} name="行驶 km" />
-              <Bar dataKey="charge_energy_added_kwh" fill="#d83a45" radius={[4, 4, 0, 0]} name="充电 kWh" />
+              <Area type="monotone" dataKey="distance_km" stroke="#171a20" fill="#eeeeee" strokeWidth={2} name="行驶 km" />
+              <Bar dataKey="charge_energy_added_kwh" fill="#3e6ae1" radius={[4, 4, 0, 0]} name="充电 kWh" />
             </AreaChart>
           </ResponsiveContainer>
         </div>
@@ -983,8 +984,8 @@ function App() {
                 })}
               />
               <Legend iconType="circle" />
-              <Line yAxisId="left" type="monotone" dataKey="battery_level" stroke="#d83a45" strokeWidth={2} dot={false} name="电量 %" />
-              <Line yAxisId="right" type="monotone" dataKey="rated_battery_range_km" stroke="#2563eb" strokeWidth={2} dot={false} name="额定续航 km" />
+              <Line yAxisId="left" type="monotone" dataKey="battery_level" stroke="#171a20" strokeWidth={2} dot={false} name="电量 %" />
+              <Line yAxisId="right" type="monotone" dataKey="rated_battery_range_km" stroke="#3e6ae1" strokeWidth={2} dot={false} name="额定续航 km" />
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -1090,9 +1091,9 @@ function App() {
                 })}
               />
               <Legend iconType="circle" />
-              <Bar dataKey="distance_km" fill="#0f766e" radius={[4, 4, 0, 0]} name="行驶 km" />
-              <Bar dataKey="ac_charge_energy_added_kwh" stackId="charge" fill="#8da2fb" radius={[4, 4, 0, 0]} name="AC充电 kWh" />
-              <Bar dataKey="dc_charge_energy_added_kwh" stackId="charge" fill="#d83a45" radius={[4, 4, 0, 0]} name="DC快充 kWh" />
+              <Bar dataKey="distance_km" fill="#171a20" radius={[4, 4, 0, 0]} name="行驶 km" />
+              <Bar dataKey="ac_charge_energy_added_kwh" stackId="charge" fill="#d0d1d2" radius={[4, 4, 0, 0]} name="AC充电 kWh" />
+              <Bar dataKey="dc_charge_energy_added_kwh" stackId="charge" fill="#3e6ae1" radius={[4, 4, 0, 0]} name="DC快充 kWh" />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -1472,39 +1473,13 @@ function App() {
   };
 
   return (
-    <div className="app app-layout">
-      <aside className="sidebar">
-        <div className="brand sidebar-brand">
-          <div className="brand-mark">
-            <CarFront size={22} />
-          </div>
-          <div>
-            <h1>{carTitle(car)}</h1>
-            <p>{carSubtitle(car)}</p>
-          </div>
-        </div>
-
-        <div className="sidebar-status">
-          <div className={`status-pill state-${car?.current_state ?? 'unknown'}`}>
-            <Activity size={15} />
-            {labelState(car?.current_state)}
-          </div>
-          <strong>{percent(car?.battery_level)}</strong>
-          <span>{km(car?.rated_battery_range_km)} · {dateTime(car?.latest_seen_at)}</span>
-        </div>
-
-        <nav className="side-nav" aria-label="报表菜单">
-          {reportItems.map((item) => (
-            <button key={item.key} type="button" className={activeReport === item.key ? 'active' : ''} onClick={() => setActiveReport(item.key)}>
-              {item.icon}
-              <span>{item.label}</span>
-            </button>
-          ))}
-        </nav>
-
-        <div className="sidebar-controls">
-          <label className="select-wrap">
-            <span>车辆</span>
+    <div className="app">
+      <header className="site-header">
+        <button className="mobile-controls-button" type="button" onClick={() => setMobileControlsOpen(true)} aria-label="打开筛选和车辆设置">
+          <SlidersHorizontal size={18} />
+        </button>
+        <div className="header-actions header-actions-left">
+          <label className="select-wrap header-car-select" aria-label="车辆">
             <select value={carId ?? ''} onChange={(event) => setCarId(Number(event.target.value))}>
               {cars.map((item) => (
                 <option value={item.id} key={item.id}>
@@ -1513,18 +1488,37 @@ function App() {
               ))}
             </select>
           </label>
-
-          <span className="control-label">周期</span>
-          <div className="range-tabs" role="tablist" aria-label="统计周期">
-            {ranges.map((item) => (
-              <button type="button" role="tab" aria-selected={period === item.value} className={period === item.value ? 'active' : ''} key={item.value} onClick={() => setPeriod(item.value)}>
-                {item.label}
-              </button>
-            ))}
-          </div>
-
+          <button className="icon-button" type="button" onClick={refreshDashboard} aria-label="刷新数据">
+            <RefreshCw size={18} className={refreshing ? 'spin' : ''} />
+          </button>
+        </div>
+        <nav className="report-tabs" role="tablist" aria-label="报表菜单">
+          {reportItems.map((item) => (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeReport === item.key}
+              className={activeReport === item.key ? 'active' : ''}
+              key={item.key}
+              onClick={() => setActiveReport(item.key)}
+            >
+              {item.icon}
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </nav>
+        <div className="header-actions header-actions-right">
+          <label className="select-wrap header-period-select" aria-label="统计周期">
+            <select value={period} onChange={(event) => setPeriod(event.target.value as PeriodKey)}>
+              {ranges.map((item) => (
+                <option value={item.value} key={item.value}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          </label>
           {period === 'custom' ? (
-            <div className="custom-period">
+            <div className="custom-period header-custom-period">
               <label>
                 <span>开始</span>
                 <input type="date" value={customStart} max={customEnd || undefined} onChange={(event) => setCustomStart(event.target.value)} />
@@ -1535,37 +1529,77 @@ function App() {
               </label>
             </div>
           ) : null}
+        </div>
+      </header>
 
-          <button className="refresh-button" type="button" onClick={() => setRefreshKey((key) => key + 1)}>
-            <RefreshCw size={17} className={refreshing ? 'spin' : ''} />
-            刷新
+      <div className={`mobile-drawer-backdrop ${mobileControlsOpen ? 'open' : ''}`} onClick={() => setMobileControlsOpen(false)} />
+      <aside className={`mobile-controls-drawer ${mobileControlsOpen ? 'open' : ''}`} aria-hidden={!mobileControlsOpen}>
+        <div className="mobile-drawer-head">
+          <strong>筛选</strong>
+          <button className="icon-button" type="button" onClick={() => setMobileControlsOpen(false)} aria-label="关闭筛选">
+            <X size={18} />
           </button>
         </div>
+
+        <label className="select-wrap drawer-field">
+          <span>车辆</span>
+          <select
+            value={carId ?? ''}
+            onChange={(event) => {
+              setCarId(Number(event.target.value));
+              setMobileControlsOpen(false);
+            }}
+          >
+            {cars.map((item) => (
+              <option value={item.id} key={item.id}>
+                {carTitle(item)}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="select-wrap drawer-field">
+          <span>周期</span>
+          <select
+            value={period}
+            onChange={(event) => {
+              setPeriod(event.target.value as PeriodKey);
+              if (event.target.value !== 'custom') setMobileControlsOpen(false);
+            }}
+          >
+            {ranges.map((item) => (
+              <option value={item.value} key={item.value}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        {period === 'custom' ? (
+          <div className="custom-period drawer-custom-period">
+            <label>
+              <span>开始</span>
+              <input type="date" value={customStart} max={customEnd || undefined} onChange={(event) => setCustomStart(event.target.value)} />
+            </label>
+            <label>
+              <span>结束</span>
+              <input type="date" value={customEnd} min={customStart || undefined} onChange={(event) => setCustomEnd(event.target.value)} />
+            </label>
+          </div>
+        ) : null}
+
+        <button className="refresh-button drawer-refresh-button" type="button" onClick={refreshDashboard}>
+          <RefreshCw size={17} className={refreshing ? 'spin' : ''} />
+          刷新
+        </button>
       </aside>
 
-      <div className="content-shell">
-        <div className="range-tabs" role="tablist" aria-label="统计周期">
-          {reportItems.map((item) => (
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeReport === item.key}
-              className={activeReport === item.key ? 'active' : ''}
-              key={item.key}
-              onClick={() => setActiveReport(item.key)}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
+      <main className="dashboard-main" id="reports">
+        <ReportTitle title={reportItems.find((item) => item.key === activeReport)?.label ?? '报表'} description={reportDescriptions[activeReport]} />
+        {error ? <div className="alert">{error}</div> : null}
 
-        <main>
-          <ReportTitle title={reportItems.find((item) => item.key === activeReport)?.label ?? '报表'} description={reportDescriptions[activeReport]} />
-          {error ? <div className="alert">{error}</div> : null}
-
-          {loading && !dashboard ? <div className="loading">加载中</div> : renderCurrentReport()}
-        </main>
-      </div>
+        {loading && !dashboard ? <div className="loading">加载中</div> : renderCurrentReport()}
+      </main>
     </div>
   );
 }
