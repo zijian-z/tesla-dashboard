@@ -333,10 +333,29 @@ type Dashboard = {
 
 type ReportKey = 'overview' | 'trends' | 'drives' | 'charging' | 'efficiency' | 'battery' | 'locations' | 'vehicle';
 type PeriodKey = '7' | '30' | '90' | '365' | '0' | 'custom';
+type ChartPaletteKey = 'teslaOfficial' | 'energySemantic' | 'nord' | 'gradient';
+
+type ChartPalette = {
+  label: string;
+  description: string;
+  soc: string;
+  charge: string;
+  chargeSecondary: string;
+  drive: string;
+  consumption: string;
+  warning: string;
+  range: string;
+  speed: string;
+  parking: string;
+  neutral: string;
+  muted: string;
+  areaOpacity: number;
+};
 
 const defaultApiBase = import.meta.env.BASE_URL === '/' ? '' : import.meta.env.BASE_URL.replace(/\/$/, '');
 const API_BASE = import.meta.env.VITE_API_BASE ?? defaultApiBase;
 const AUTO_REFRESH_MS = 60_000;
+const CHART_PALETTE_STORAGE_KEY = 'teslamate-chart-palette';
 const DEFAULT_MAP_TILE_URL = 'https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x={x}&y={y}&z={z}';
 const MAP_TILE_URL = String(import.meta.env.VITE_MAP_TILE_URL || DEFAULT_MAP_TILE_URL);
 const DISPLAY_TIME_ZONE = String(import.meta.env.VITE_DISPLAY_TIME_ZONE || 'Asia/Shanghai');
@@ -358,6 +377,88 @@ const ranges: Array<{ label: string; value: PeriodKey }> = [
   { label: '自定义', value: 'custom' }
 ];
 
+const chartPalettes: Record<ChartPaletteKey, ChartPalette> = {
+  teslaOfficial: {
+    label: '特斯拉官方风',
+    description: '深色 Tesla App 风格图表色',
+    soc: '#3E9CFF',
+    charge: '#00D2A0',
+    chargeSecondary: '#54E0C3',
+    drive: '#5AC8FA',
+    consumption: '#FF9F0A',
+    warning: '#FF453A',
+    range: '#BF5AF2',
+    speed: '#FF9F0A',
+    parking: '#8E8E93',
+    neutral: '#F4F4F4',
+    muted: '#8E8E93',
+    areaOpacity: 0.6
+  },
+  energySemantic: {
+    label: '能源仪表盘',
+    description: '按数据语义区分颜色',
+    soc: '#3B82F6',
+    charge: '#10B981',
+    chargeSecondary: '#34D399',
+    drive: '#8B5CF6',
+    consumption: '#F59E0B',
+    warning: '#EF4444',
+    range: '#06B6D4',
+    speed: '#EC4899',
+    parking: '#6B7280',
+    neutral: '#374151',
+    muted: '#9CA3AF',
+    areaOpacity: 0.36
+  },
+  nord: {
+    label: 'Nord 北欧风',
+    description: '柔和低刺激的长时间查看配色',
+    soc: '#88C0D0',
+    charge: '#A3BE8C',
+    chargeSecondary: '#8FBCBB',
+    drive: '#B48EAD',
+    consumption: '#EBCB8B',
+    warning: '#BF616A',
+    range: '#81A1C1',
+    speed: '#D08770',
+    parking: '#4C566A',
+    neutral: '#D8DEE9',
+    muted: '#A7B0C0',
+    areaOpacity: 0.32
+  },
+  gradient: {
+    label: '渐变填充',
+    description: '折线和面积图使用更强的渐变填充',
+    soc: '#3E9CFF',
+    charge: '#00D2A0',
+    chargeSecondary: '#6EE7D8',
+    drive: '#5AC8FA',
+    consumption: '#FF9F0A',
+    warning: '#FF453A',
+    range: '#BF5AF2',
+    speed: '#FF9F0A',
+    parking: '#8E8E93',
+    neutral: '#171A20',
+    muted: '#8E8E8E',
+    areaOpacity: 0.6
+  }
+};
+
+const chartPaletteOptions = Object.entries(chartPalettes).map(([value, palette]) => ({
+  value: value as ChartPaletteKey,
+  label: palette.label
+}));
+
+function initialChartPaletteKey(): ChartPaletteKey {
+  try {
+    const stored = window.localStorage.getItem(CHART_PALETTE_STORAGE_KEY);
+    if (stored && stored in chartPalettes) return stored as ChartPaletteKey;
+  } catch {
+    // localStorage may be unavailable in restricted browser modes.
+  }
+  return 'teslaOfficial';
+}
+
 const numberFormat = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 });
 const integerFormat = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 });
 const currencyFormat = new Intl.NumberFormat('zh-CN', {
@@ -372,14 +473,6 @@ const stateLabels: Record<string, string> = {
   offline: '离线',
   charging: '充电',
   driving: '行驶'
-};
-
-const stateColors: Record<string, string> = {
-  online: '#171a20',
-  asleep: '#8e8e8e',
-  offline: '#d0d1d2',
-  charging: '#3e6ae1',
-  driving: '#393c41'
 };
 
 const predictionBasisLabels: Record<string, string> = {
@@ -662,7 +755,7 @@ function ReportTitle({ title, description }: { title: string; description: strin
   );
 }
 
-function RouteMap({ points, label }: { points?: RoutePoint[]; label: string }) {
+function RouteMap({ points, label, palette }: { points?: RoutePoint[]; label: string; palette: ChartPalette }) {
   const positions = React.useMemo<LatLngExpression[]>(
     () =>
       (points ?? [])
@@ -683,9 +776,9 @@ function RouteMap({ points, label }: { points?: RoutePoint[]; label: string }) {
       <MapContainer className="route-map" center={first} zoom={14} scrollWheelZoom={false} zoomControl={false} attributionControl={false}>
         <TileLayer url={MAP_TILE_URL} subdomains={MAP_TILE_SUBDOMAINS} />
         <FitRoute positions={positions} />
-        <Polyline positions={positions} pathOptions={{ color: '#3e6ae1', weight: 4, opacity: 0.88 }} />
-        <CircleMarker center={first} radius={5} pathOptions={{ color: '#ffffff', fillColor: '#3e6ae1', fillOpacity: 1, weight: 2 }} />
-        <CircleMarker center={last} radius={5} pathOptions={{ color: '#ffffff', fillColor: '#171a20', fillOpacity: 1, weight: 2 }} />
+        <Polyline positions={positions} pathOptions={{ color: palette.drive, weight: 4, opacity: 0.88 }} />
+        <CircleMarker center={first} radius={5} pathOptions={{ color: '#ffffff', fillColor: palette.drive, fillOpacity: 1, weight: 2 }} />
+        <CircleMarker center={last} radius={5} pathOptions={{ color: '#ffffff', fillColor: palette.neutral, fillOpacity: 1, weight: 2 }} />
       </MapContainer>
     </div>
   );
@@ -714,7 +807,7 @@ function FitRoute({ positions }: { positions: LatLngExpression[] }) {
   return null;
 }
 
-function ChargePowerChart({ charge }: { charge: ChargeRecord }) {
+function ChargePowerChart({ charge, palette }: { charge: ChargeRecord; palette: ChartPalette }) {
   const data = React.useMemo(
     () =>
       (charge.samples ?? [])
@@ -750,8 +843,8 @@ function ChargePowerChart({ charge }: { charge: ChargeRecord }) {
             })}
             labelFormatter={(label) => `${label} 分钟`}
           />
-          <Bar yAxisId="left" dataKey="charger_power_kw" fill="#d0d1d2" radius={[3, 3, 0, 0]} name="charger_power_kw" />
-          <Line yAxisId="right" type="monotone" dataKey="battery_level" stroke="#171a20" strokeWidth={2} dot={false} name="battery_level" />
+          <Bar yAxisId="left" dataKey="charger_power_kw" fill={palette.charge} radius={[3, 3, 0, 0]} name="charger_power_kw" />
+          <Line yAxisId="right" type="monotone" dataKey="battery_level" stroke={palette.soc} strokeWidth={2} dot={false} name="battery_level" />
         </ComposedChart>
       </ResponsiveContainer>
     </div>
@@ -771,6 +864,8 @@ function App() {
   const [error, setError] = React.useState<string | null>(null);
   const [refreshKey, setRefreshKey] = React.useState(0);
   const [mobileControlsOpen, setMobileControlsOpen] = React.useState(false);
+  const [chartPaletteKey, setChartPaletteKey] = React.useState<ChartPaletteKey>(() => initialChartPaletteKey());
+  const chartPalette = chartPalettes[chartPaletteKey];
   const dashboardQuery = React.useMemo(() => {
     if (period === 'custom') {
       const params = new URLSearchParams();
@@ -821,6 +916,14 @@ function App() {
     }, AUTO_REFRESH_MS);
     return () => window.clearInterval(timer);
   }, []);
+
+  React.useEffect(() => {
+    try {
+      window.localStorage.setItem(CHART_PALETTE_STORAGE_KEY, chartPaletteKey);
+    } catch {
+      // Ignore persistence failures; runtime selection still works.
+    }
+  }, [chartPaletteKey]);
 
   const car = dashboard?.car ?? cars.find((item) => item.id === carId) ?? null;
   const summary = dashboard?.summary ?? {};
@@ -874,9 +977,20 @@ function App() {
           ...item,
           label: labelState(item.state),
           value: Number(item.hours.toFixed(1)),
-          fill: stateColors[item.state] ?? '#5c5e62'
+          fill:
+            item.state === 'charging'
+              ? chartPalette.charge
+              : item.state === 'driving'
+                ? chartPalette.drive
+                : item.state === 'online'
+                  ? chartPalette.soc
+                  : item.state === 'offline'
+                    ? chartPalette.warning
+                    : item.state === 'asleep'
+                      ? chartPalette.parking
+                      : chartPalette.muted
         })),
-    [dashboard]
+    [chartPalette, dashboard]
   );
   const driveEfficiency = React.useMemo(
     () =>
@@ -946,6 +1060,12 @@ function App() {
         <div className="chart chart-tall">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={daily} margin={{ top: 10, right: 10, bottom: 0, left: -18 }}>
+              <defs>
+                <linearGradient id="dailyDriveFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={chartPalette.drive} stopOpacity={chartPalette.areaOpacity} />
+                  <stop offset="100%" stopColor={chartPalette.drive} stopOpacity={0.05} />
+                </linearGradient>
+              </defs>
               <CartesianGrid strokeDasharray="3 3" vertical={false} />
               <XAxis dataKey="label" tickLine={false} axisLine={false} minTickGap={18} />
               <YAxis tickLine={false} axisLine={false} width={42} />
@@ -956,8 +1076,8 @@ function App() {
                 })}
                 labelFormatter={(label) => `日期 ${label}`}
               />
-              <Area type="monotone" dataKey="distance_km" stroke="#171a20" fill="#eeeeee" strokeWidth={2} name="行驶 km" />
-              <Bar dataKey="charge_energy_added_kwh" fill="#3e6ae1" radius={[4, 4, 0, 0]} name="充电 kWh" />
+              <Area type="monotone" dataKey="distance_km" stroke={chartPalette.drive} fill="url(#dailyDriveFill)" strokeWidth={2} name="行驶 km" />
+              <Bar dataKey="charge_energy_added_kwh" fill={chartPalette.charge} radius={[4, 4, 0, 0]} name="充电 kWh" />
             </AreaChart>
           </ResponsiveContainer>
         </div>
@@ -984,8 +1104,8 @@ function App() {
                 })}
               />
               <Legend iconType="circle" />
-              <Line yAxisId="left" type="monotone" dataKey="battery_level" stroke="#171a20" strokeWidth={2} dot={false} name="电量 %" />
-              <Line yAxisId="right" type="monotone" dataKey="rated_battery_range_km" stroke="#3e6ae1" strokeWidth={2} dot={false} name="额定续航 km" />
+              <Line yAxisId="left" type="monotone" dataKey="battery_level" stroke={chartPalette.soc} strokeWidth={2} dot={false} name="电量 %" />
+              <Line yAxisId="right" type="monotone" dataKey="rated_battery_range_km" stroke={chartPalette.range} strokeWidth={2} dot={false} name="额定续航 km" />
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -1057,14 +1177,14 @@ function App() {
                     })}
                     labelFormatter={(label) => `${label}:00`}
                   />
-                  <Line type="monotone" dataKey="actual_battery_level" stroke="#171a20" strokeWidth={2.4} dot={false} connectNulls={false} name="实际电量" />
-                  <Line type="monotone" dataKey="predicted_battery_level" stroke="#3e6ae1" strokeWidth={2.4} strokeDasharray="6 4" dot={false} connectNulls={false} name="预测电量" />
+                  <Line type="monotone" dataKey="actual_battery_level" stroke={chartPalette.soc} strokeWidth={2.4} dot={false} connectNulls={false} name="实际电量" />
+                  <Line type="monotone" dataKey="predicted_battery_level" stroke={chartPalette.range} strokeWidth={2.4} strokeDasharray="6 4" dot={false} connectNulls={false} name="预测电量" />
                 </LineChart>
               </ResponsiveContainer>
             </div>
             <div className="energy-legend" aria-label="今日电量预测图例">
-              <span><i style={{ background: '#171a20' }} />实际电量</span>
-              <span><i style={{ background: '#3e6ae1' }} />预测电量</span>
+              <span><i style={{ background: chartPalette.soc }} />实际电量</span>
+              <span><i style={{ background: chartPalette.range }} />预测电量</span>
             </div>
           </>
         ) : (
@@ -1091,9 +1211,9 @@ function App() {
                 })}
               />
               <Legend iconType="circle" />
-              <Bar dataKey="distance_km" fill="#171a20" radius={[4, 4, 0, 0]} name="行驶 km" />
-              <Bar dataKey="ac_charge_energy_added_kwh" stackId="charge" fill="#d0d1d2" radius={[4, 4, 0, 0]} name="AC充电 kWh" />
-              <Bar dataKey="dc_charge_energy_added_kwh" stackId="charge" fill="#3e6ae1" radius={[4, 4, 0, 0]} name="DC快充 kWh" />
+              <Bar dataKey="distance_km" fill={chartPalette.drive} radius={[4, 4, 0, 0]} name="行驶 km" />
+              <Bar dataKey="ac_charge_energy_added_kwh" stackId="charge" fill={chartPalette.chargeSecondary} radius={[4, 4, 0, 0]} name="AC充电 kWh" />
+              <Bar dataKey="dc_charge_energy_added_kwh" stackId="charge" fill={chartPalette.charge} radius={[4, 4, 0, 0]} name="DC快充 kWh" />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -1120,8 +1240,8 @@ function App() {
                 })}
               />
               <Legend iconType="circle" />
-              <Bar yAxisId="left" dataKey="distance_km" fill="#171a20" radius={[4, 4, 0, 0]} name="里程 km" />
-              <Line yAxisId="right" type="monotone" dataKey="estimated_kwh_per_100km" stroke="#3e6ae1" strokeWidth={2} dot={false} name="kWh/100km" />
+              <Bar yAxisId="left" dataKey="distance_km" fill={chartPalette.drive} radius={[4, 4, 0, 0]} name="里程 km" />
+              <Line yAxisId="right" type="monotone" dataKey="estimated_kwh_per_100km" stroke={chartPalette.consumption} strokeWidth={2} dot={false} name="kWh/100km" />
             </ComposedChart>
           </ResponsiveContainer>
         </div>
@@ -1148,8 +1268,8 @@ function App() {
                 })}
               />
               <Legend iconType="circle" />
-              <Bar yAxisId="left" dataKey="charge_energy_added_kwh" fill="#171a20" radius={[4, 4, 0, 0]} name="充电 kWh" />
-              <Line yAxisId="right" type="monotone" dataKey="max_power_kw" stroke="#3e6ae1" strokeWidth={2} dot={false} name="峰值 kW" />
+              <Bar yAxisId="left" dataKey="charge_energy_added_kwh" fill={chartPalette.charge} radius={[4, 4, 0, 0]} name="充电 kWh" />
+              <Line yAxisId="right" type="monotone" dataKey="max_power_kw" stroke={chartPalette.speed} strokeWidth={2} dot={false} name="峰值 kW" />
             </ComposedChart>
           </ResponsiveContainer>
         </div>
@@ -1179,7 +1299,7 @@ function App() {
                 <span>{drive.estimated_kwh ? kwh(drive.estimated_kwh) : '—'}</span>
                 <span>{drive.estimated_kwh_per_100km ? `${n(drive.estimated_kwh_per_100km)} kWh/100km` : '—'}</span>
               </div>
-              <RouteMap points={drive.route_points} label={`${locationLabel(drive.start_location)} 到 ${locationLabel(drive.end_location)}`} />
+              <RouteMap points={drive.route_points} label={`${locationLabel(drive.start_location)} 到 ${locationLabel(drive.end_location)}`} palette={chartPalette} />
             </article>
           ))}
         </div>
@@ -1207,7 +1327,7 @@ function App() {
                 <span>{minutes(charge.duration_min)}</span>
                 <span>{charge.max_power_kw ? `${n(charge.max_power_kw, 0)} kW` : '—'}</span>
               </div>
-              <ChargePowerChart charge={charge} />
+              <ChargePowerChart charge={charge} palette={chartPalette} />
             </article>
           ))}
         </div>
@@ -1478,20 +1598,6 @@ function App() {
         <button className="mobile-controls-button" type="button" onClick={() => setMobileControlsOpen(true)} aria-label="打开筛选和车辆设置">
           <SlidersHorizontal size={18} />
         </button>
-        <div className="header-actions header-actions-left">
-          <label className="select-wrap header-car-select" aria-label="车辆">
-            <select value={carId ?? ''} onChange={(event) => setCarId(Number(event.target.value))}>
-              {cars.map((item) => (
-                <option value={item.id} key={item.id}>
-                  {carTitle(item)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button className="icon-button" type="button" onClick={refreshDashboard} aria-label="刷新数据">
-            <RefreshCw size={18} className={refreshing ? 'spin' : ''} />
-          </button>
-        </div>
         <nav className="report-tabs" role="tablist" aria-label="报表菜单">
           {reportItems.map((item) => (
             <button
@@ -1507,35 +1613,13 @@ function App() {
             </button>
           ))}
         </nav>
-        <div className="header-actions header-actions-right">
-          <label className="select-wrap header-period-select" aria-label="统计周期">
-            <select value={period} onChange={(event) => setPeriod(event.target.value as PeriodKey)}>
-              {ranges.map((item) => (
-                <option value={item.value} key={item.value}>
-                  {item.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          {period === 'custom' ? (
-            <div className="custom-period header-custom-period">
-              <label>
-                <span>开始</span>
-                <input type="date" value={customStart} max={customEnd || undefined} onChange={(event) => setCustomStart(event.target.value)} />
-              </label>
-              <label>
-                <span>结束</span>
-                <input type="date" value={customEnd} min={customStart || undefined} onChange={(event) => setCustomEnd(event.target.value)} />
-              </label>
-            </div>
-          ) : null}
-        </div>
+        <span className="header-spacer" aria-hidden="true" />
       </header>
 
       <div className={`mobile-drawer-backdrop ${mobileControlsOpen ? 'open' : ''}`} onClick={() => setMobileControlsOpen(false)} />
       <aside className={`mobile-controls-drawer ${mobileControlsOpen ? 'open' : ''}`} aria-hidden={!mobileControlsOpen}>
         <div className="mobile-drawer-head">
-          <strong>筛选</strong>
+          <strong>筛选与图表</strong>
           <button className="icon-button" type="button" onClick={() => setMobileControlsOpen(false)} aria-label="关闭筛选">
             <X size={18} />
           </button>
@@ -1574,6 +1658,18 @@ function App() {
             ))}
           </select>
         </label>
+
+        <label className="select-wrap drawer-field">
+          <span>图表配色</span>
+          <select value={chartPaletteKey} onChange={(event) => setChartPaletteKey(event.target.value as ChartPaletteKey)}>
+            {chartPaletteOptions.map((item) => (
+              <option value={item.value} key={item.value}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <p className="drawer-palette-detail">{chartPalette.description}</p>
 
         {period === 'custom' ? (
           <div className="custom-period drawer-custom-period">

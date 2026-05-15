@@ -74,7 +74,7 @@ a:focus-visible {
   left: 0;
   z-index: 50;
   display: grid;
-  grid-template-columns: minmax(170px, 0.72fr) minmax(0, 1.4fr) minmax(96px, 0.72fr);
+  grid-template-columns: 34px minmax(0, 1fr) 34px;
   align-items: center;
   min-height: 56px;
   padding: 0 32px;
@@ -122,12 +122,20 @@ a:focus-visible {
 }
 
 .mobile-controls-button {
-  display: none;
+  display: grid;
+  justify-self: start;
   width: 34px;
   height: 34px;
   place-items: center;
   color: var(--tds-carbon);
   background: transparent;
+}
+
+.header-spacer {
+  display: block;
+  width: 34px;
+  height: 34px;
+  justify-self: end;
 }
 
 .report-tabs {
@@ -359,9 +367,91 @@ a:focus-visible {
   padding: 84px 28px 64px;
 }
 
-.mobile-drawer-backdrop,
+.mobile-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: block;
+  visibility: hidden;
+  background: rgba(23, 26, 32, 0.42);
+  opacity: 0;
+  transition:
+    opacity var(--tds-transition),
+    visibility var(--tds-transition);
+}
+
+.mobile-drawer-backdrop.open {
+  visibility: visible;
+  opacity: 1;
+}
+
 .mobile-controls-drawer {
-  display: none;
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 80;
+  display: grid;
+  align-content: start;
+  width: min(340px, 86vw);
+  padding: 16px;
+  background: var(--tds-white);
+  transform: translateX(-100%);
+  visibility: hidden;
+  transition:
+    transform var(--tds-transition),
+    visibility var(--tds-transition);
+}
+
+.mobile-controls-drawer.open {
+  transform: translateX(0);
+  visibility: visible;
+}
+
+.mobile-drawer-head {
+  justify-content: space-between;
+  min-height: 40px;
+  margin-bottom: 14px;
+}
+
+.mobile-drawer-head strong {
+  color: var(--tds-carbon);
+  font-size: 17px;
+  font-weight: 500;
+}
+
+.drawer-field {
+  gap: 7px;
+  margin-bottom: 12px;
+}
+
+.drawer-field span,
+.drawer-custom-period span {
+  color: var(--tds-pewter);
+  font-size: 12px;
+}
+
+.drawer-field select {
+  height: 40px;
+  border-color: var(--tds-silver);
+  background: var(--tds-white);
+}
+
+.drawer-palette-detail {
+  margin: -5px 0 12px;
+  color: var(--tds-pewter);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.drawer-custom-period {
+  grid-template-columns: 1fr;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.drawer-refresh-button {
+  width: 100%;
 }
 
 .report-title {
@@ -912,18 +1002,9 @@ a:focus-visible {
 
 @media (max-width: 900px) {
   .site-header {
-    grid-template-areas:
-      "settings tabs";
-    grid-template-columns: auto minmax(0, 1fr);
-    row-gap: 6px;
+    grid-template-columns: 34px minmax(0, 1fr) 34px;
     min-height: 56px;
     padding: 8px 10px;
-  }
-
-  .mobile-controls-button {
-    grid-area: settings;
-    display: grid;
-    justify-self: start;
   }
 
   .header-actions-left,
@@ -932,7 +1013,6 @@ a:focus-visible {
   }
 
   .report-tabs {
-    grid-area: tabs;
     justify-self: stretch;
     padding: 0;
   }
@@ -953,80 +1033,8 @@ a:focus-visible {
     padding: 80px 14px 48px;
   }
 
-  .mobile-drawer-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 70;
-    display: block;
-    visibility: hidden;
-    background: rgba(23, 26, 32, 0.42);
-    opacity: 0;
-    transition:
-      opacity var(--tds-transition),
-      visibility var(--tds-transition);
-  }
-
-  .mobile-drawer-backdrop.open {
-    visibility: visible;
-    opacity: 1;
-  }
-
   .mobile-controls-drawer {
-    position: fixed;
-    top: 0;
-    bottom: 0;
-    left: 0;
-    z-index: 80;
-    display: grid;
-    align-content: start;
     width: min(320px, 86vw);
-    padding: 16px;
-    background: var(--tds-white);
-    transform: translateX(-100%);
-    transition: transform var(--tds-transition);
-  }
-
-  .mobile-controls-drawer.open {
-    transform: translateX(0);
-  }
-
-  .mobile-drawer-head {
-    justify-content: space-between;
-    min-height: 40px;
-    margin-bottom: 14px;
-  }
-
-  .mobile-drawer-head strong {
-    color: var(--tds-carbon);
-    font-size: 17px;
-    font-weight: 500;
-  }
-
-  .drawer-field {
-    gap: 7px;
-    margin-bottom: 12px;
-  }
-
-  .drawer-field span,
-  .drawer-custom-period span {
-    color: var(--tds-pewter);
-    font-size: 12px;
-  }
-
-  .drawer-field select {
-    height: 40px;
-    border-color: var(--tds-silver);
-    background: var(--tds-white);
-  }
-
-  .drawer-custom-period {
-    grid-template-columns: 1fr;
-    gap: 10px;
-    margin-bottom: 14px;
-  }
-
-  .drawer-refresh-button {
-    width: 100%;
   }
 
   .report-title h2 {
