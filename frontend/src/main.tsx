@@ -1029,10 +1029,46 @@ function App() {
   const todayEnergyHasData = todayEnergyPoints.some(
     (item) => item.actual_battery_level !== null || item.predicted_battery_level !== null
   );
+  const prepareDashboardRefresh = React.useCallback(() => {
+    setDashboard(null);
+    setLoading(true);
+    setError(null);
+  }, []);
+  const changeCarId = React.useCallback(
+    (nextCarId: number) => {
+      prepareDashboardRefresh();
+      setCarId(nextCarId);
+      setMobileControlsOpen(false);
+    },
+    [prepareDashboardRefresh]
+  );
+  const changePeriod = React.useCallback(
+    (nextPeriod: PeriodKey) => {
+      prepareDashboardRefresh();
+      setPeriod(nextPeriod);
+      if (nextPeriod !== 'custom') setMobileControlsOpen(false);
+    },
+    [prepareDashboardRefresh]
+  );
+  const changeCustomStart = React.useCallback(
+    (value: string) => {
+      prepareDashboardRefresh();
+      setCustomStart(value);
+    },
+    [prepareDashboardRefresh]
+  );
+  const changeCustomEnd = React.useCallback(
+    (value: string) => {
+      prepareDashboardRefresh();
+      setCustomEnd(value);
+    },
+    [prepareDashboardRefresh]
+  );
   const refreshDashboard = React.useCallback(() => {
+    prepareDashboardRefresh();
     setRefreshKey((key) => key + 1);
     setMobileControlsOpen(false);
-  }, []);
+  }, [prepareDashboardRefresh]);
   const reportItems: Array<{ key: ReportKey; label: string; icon: React.ReactNode }> = [
     { key: 'overview', label: '概览', icon: <Activity size={17} /> },
     { key: 'trends', label: '趋势', icon: <ChartNoAxesColumn size={17} /> },
@@ -1053,6 +1089,16 @@ function App() {
     locations: '常到地点与充电地点',
     vehicle: '车辆硬件、环境和软件信息'
   };
+  const reportRenderKey = [
+    activeReport,
+    carId ?? 'none',
+    dashboardQuery,
+    chartPaletteKey,
+    dashboard?.data_window.first_seen_at ?? '',
+    dashboard?.data_window.last_seen_at ?? '',
+    dashboard?.data_window.since ?? '',
+    dashboard?.data_window.until ?? ''
+  ].join('|');
 
   const renderDailyTrend = () => (
     <Section title="日趋势" icon={<ChartNoAxesColumn size={18} />} aside={dashboard?.data_window.since ? `${shortDate(dashboard.data_window.since)} 起` : '全部'}>
@@ -1127,7 +1173,12 @@ function App() {
                     <Cell key={entry.state} fill={entry.fill} />
                   ))}
                 </Pie>
-                <Tooltip formatter={chartTooltipFormatter({ value: { label: '时长', format: (value) => `${n(value)} 小时` } })} />
+                <Tooltip
+                  formatter={(value, name) => {
+                    const numeric = typeof value === 'number' ? value : Number(value);
+                    return [Number.isFinite(numeric) ? `${n(numeric)} 小时` : '—', String(name)];
+                  }}
+                />
               </PieChart>
             </ResponsiveContainer>
           </div>
@@ -1629,31 +1680,11 @@ function App() {
           <span>车辆</span>
           <select
             value={carId ?? ''}
-            onChange={(event) => {
-              setCarId(Number(event.target.value));
-              setMobileControlsOpen(false);
-            }}
+            onChange={(event) => changeCarId(Number(event.target.value))}
           >
             {cars.map((item) => (
               <option value={item.id} key={item.id}>
                 {carTitle(item)}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label className="select-wrap drawer-field">
-          <span>周期</span>
-          <select
-            value={period}
-            onChange={(event) => {
-              setPeriod(event.target.value as PeriodKey);
-              if (event.target.value !== 'custom') setMobileControlsOpen(false);
-            }}
-          >
-            {ranges.map((item) => (
-              <option value={item.value} key={item.value}>
-                {item.label}
               </option>
             ))}
           </select>
@@ -1671,15 +1702,29 @@ function App() {
         </label>
         <p className="drawer-palette-detail">{chartPalette.description}</p>
 
+        <label className="select-wrap drawer-field">
+          <span>周期</span>
+          <select
+            value={period}
+            onChange={(event) => changePeriod(event.target.value as PeriodKey)}
+          >
+            {ranges.map((item) => (
+              <option value={item.value} key={item.value}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
         {period === 'custom' ? (
           <div className="custom-period drawer-custom-period">
             <label>
               <span>开始</span>
-              <input type="date" value={customStart} max={customEnd || undefined} onChange={(event) => setCustomStart(event.target.value)} />
+              <input type="date" value={customStart} max={customEnd || undefined} onChange={(event) => changeCustomStart(event.target.value)} />
             </label>
             <label>
               <span>结束</span>
-              <input type="date" value={customEnd} min={customStart || undefined} onChange={(event) => setCustomEnd(event.target.value)} />
+              <input type="date" value={customEnd} min={customStart || undefined} onChange={(event) => changeCustomEnd(event.target.value)} />
             </label>
           </div>
         ) : null}
@@ -1694,7 +1739,7 @@ function App() {
         <ReportTitle title={reportItems.find((item) => item.key === activeReport)?.label ?? '报表'} description={reportDescriptions[activeReport]} />
         {error ? <div className="alert">{error}</div> : null}
 
-        {loading && !dashboard ? <div className="loading">加载中</div> : renderCurrentReport()}
+        {loading && !dashboard ? <div className="loading">加载中</div> : <div key={reportRenderKey}>{renderCurrentReport()}</div>}
       </main>
     </div>
   );
