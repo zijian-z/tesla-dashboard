@@ -7,6 +7,28 @@
 
 API、PostgreSQL、MQTT 和 TeslaMate 容器端口都只在 Docker 网络内使用。对外入口统一由内置 Nginx 提供 Basic Auth、静态页面和内部转发，避免在宿主机上额外暴露多个服务端口。
 
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src="https://github.com/user-attachments/assets/11bc80a5-3271-4aff-a1a6-c1a98e6a18a2" alt="Overview" />
+    </td>
+    <td width="50%">
+      <img src="https://github.com/user-attachments/assets/340ede83-b78a-4d74-9e61-a0c8a63c1134" alt="Drive statistics" />
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="https://github.com/user-attachments/assets/cfd59b6e-5b17-41ee-a3c9-44e76cf3434e" alt="Charging statistics" />
+    </td>
+    <td width="50%">
+      <img src="https://github.com/user-attachments/assets/17a21a5a-b326-4ec3-bc46-209b2fd64805" alt="Dashboard detail" />
+    </td>
+  </tr>
+</table>
+
+
 ## 功能
 
 - 当前车辆状态、电量、续航、里程、位置、温度、胎压、软件版本
