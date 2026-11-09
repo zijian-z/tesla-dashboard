@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import FastAPI, HTTPException, Query
@@ -589,11 +589,11 @@ def _period(
 ) -> dict[str, datetime | int | bool | None]:
     row = fetch_one(
         """
-        select min(date) as first_seen_at, max(date) as last_seen_at
-        from public.positions
-        where car_id = %s
+        select
+            (select date from public.positions where car_id = %s order by date asc limit 1) as first_seen_at,
+            (select date from public.positions where car_id = %s order by date desc limit 1) as last_seen_at
         """,
-        (car_id,),
+        (car_id, car_id),
     )
     if not row or row["last_seen_at"] is None:
         raise HTTPException(status_code=404, detail="未找到车辆位置数据")
@@ -702,6 +702,17 @@ def _cars() -> list[dict[str, Any]]:
     )
 
 
+Report = Literal["all", "overview", "trends", "drives", "charging", "efficiency", "battery", "locations", "vehicle"]
+
+
+def fetch_one_for(report: Report, sections: tuple[Report, ...], query: str, params: tuple[Any, ...]) -> dict[str, Any] | None:
+    return fetch_one(query, params) if report == "all" or report in sections else None
+
+
+def fetch_all_for(report: Report, sections: tuple[Report, ...], query: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
+    return fetch_all(query, params) if report == "all" or report in sections else []
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     fetch_one("select 1 as ok")
@@ -719,6 +730,7 @@ def dashboard(
     days: int = Query(default=7, ge=0, le=3650, description="0 表示全部数据"),
     start: date | None = Query(default=None, description="自定义开始日期，格式 YYYY-MM-DD"),
     end: date | None = Query(default=None, description="自定义结束日期，格式 YYYY-MM-DD"),
+    report: Report = "all",
 ) -> Any:
     if start and end and start > end:
         raise HTTPException(status_code=422, detail="开始日期不能晚于结束日期")
@@ -732,7 +744,7 @@ def dashboard(
     since = period["since"]
     until = period["until"]
 
-    drive_stats = fetch_one(
+    drive_stats = fetch_one_for(report, ('overview', 'drives', 'efficiency'),
         """
         select
             count(*)::int as drive_count,
@@ -786,7 +798,7 @@ def dashboard(
         (car_id, since, since, until),
     )
 
-    charge_stats = fetch_one(
+    charge_stats = fetch_one_for(report, ('overview', 'charging', 'efficiency'),
         f"""
         select
             count(*)::int as charge_count,
@@ -822,7 +834,7 @@ def dashboard(
         (car_id, since, since, until),
     )
 
-    active_charge_stats = fetch_one(
+    active_charge_stats = fetch_one_for(report, ('charging',),
         f"""
         select count(*)::int as active_charge_count
         from public.charging_processes cp
@@ -846,7 +858,7 @@ def dashboard(
         (car_id, since, since, until),
     )
 
-    lifetime = fetch_one(
+    lifetime = fetch_one_for(report, ('overview',),
         f"""
         select
             (select count(*)::int from public.drives where car_id = %s) as drive_count,
@@ -859,7 +871,7 @@ def dashboard(
         (car_id, car_id, car_id, car_id, car_id, car_id),
     )
 
-    daily = fetch_all(
+    daily = fetch_all_for(report, ('trends', 'efficiency'),
         f"""
         with drive_days as (
             select
@@ -921,7 +933,7 @@ def dashboard(
         (car_id, since, since, until, car_id, since, since, until),
     )
 
-    monthly = fetch_all(
+    monthly = fetch_all_for(report, ('trends',),
         f"""
         with drive_months as (
             select
@@ -983,7 +995,7 @@ def dashboard(
         (car_id, since, since, until, car_id, since, since, until),
     )
 
-    states = fetch_all(
+    states = fetch_all_for(report, ('trends', 'battery'),
         """
         with params as (
             select %s::timestamp as since, %s::timestamp as until
@@ -1014,7 +1026,7 @@ def dashboard(
         (since, until, car_id),
     )
 
-    range_series = fetch_all(
+    range_series = fetch_all_for(report, ('trends', 'battery'),
         """
         select distinct on (date_trunc('day', date))
             date_trunc('day', date)::date as day,
@@ -1034,7 +1046,7 @@ def dashboard(
         (car_id, since, since, until),
     )
 
-    insights = fetch_one(
+    insights = fetch_one_for(report, ('battery',),
         """
         with first_position as (
             select *
@@ -1116,8 +1128,17 @@ def dashboard(
 
     drive_location_start = f"coalesce(nullif(sg.name, ''), {address_label('sa')})"
     drive_location_end = f"coalesce(nullif(eg.name, ''), {address_label('ea')})"
-    recent_drives = fetch_all(
+    recent_drives = fetch_all_for(report, ('drives',),
         f"""
+        with selected_drives as materialized (
+            select *
+            from public.drives
+            where car_id = %s
+              and (%s::timestamp is null or start_date >= %s::timestamp)
+              and start_date <= %s::timestamp
+            order by start_date desc
+            limit 12
+        )
         select
             d.id,
             d.start_date,
@@ -1152,7 +1173,7 @@ def dashboard(
                 else null
             end as estimated_kwh_per_100km,
             coalesce(route.route_points, '[]'::jsonb) as route_points
-        from public.drives d
+        from selected_drives d
         join public.cars c on c.id = d.car_id
         left join public.addresses sa on sa.id = d.start_address_id
         left join public.addresses ea on ea.id = d.end_address_id
@@ -1201,16 +1222,12 @@ def dashboard(
                 order by date
             ) sampled
         ) route on true
-        where d.car_id = %s
-          and (%s::timestamp is null or d.start_date >= %s::timestamp)
-          and d.start_date <= %s::timestamp
         order by d.start_date desc
-        limit 12
         """,
         (car_id, since, since, until),
     )
 
-    drive_efficiency = fetch_all(
+    drive_efficiency = fetch_all_for(report, ('drives', 'efficiency'),
         f"""
         select
             d.id,
@@ -1257,7 +1274,7 @@ def dashboard(
     )
 
     charge_location = f"coalesce(nullif(g.name, ''), {address_label('a')})"
-    recent_charges = fetch_all(
+    recent_charges = fetch_all_for(report, ('charging',),
         f"""
         select
             cp.id,
@@ -1365,7 +1382,7 @@ def dashboard(
         (car_id, since, since, until),
     )
 
-    charge_sessions = fetch_all(
+    charge_sessions = fetch_all_for(report, ('charging',),
         f"""
         select
             cp.id,
@@ -1432,7 +1449,7 @@ def dashboard(
         (car_id, since, since, until),
     )
 
-    top_destinations = fetch_all(
+    top_destinations = fetch_all_for(report, ('locations',),
         f"""
         select
             {drive_location_end} as location,
@@ -1456,7 +1473,7 @@ def dashboard(
         (car_id, since, since, until),
     )
 
-    route_stats = fetch_all(
+    route_stats = fetch_all_for(report, ('locations',),
         f"""
         select
             {drive_location_start} as start_location,
@@ -1482,7 +1499,7 @@ def dashboard(
         (car_id, since, since, until),
     )
 
-    top_charge_locations = fetch_all(
+    top_charge_locations = fetch_all_for(report, ('locations',),
         f"""
         select
             {charge_location} as location,
@@ -1503,7 +1520,7 @@ def dashboard(
         (car_id, since, since, until),
     )
 
-    updates = fetch_all(
+    updates = fetch_all_for(report, ('vehicle',),
         """
         select id, start_date, end_date, version
         from public.updates
@@ -1514,7 +1531,7 @@ def dashboard(
         (car_id,),
     )
 
-    active_charge = fetch_one(
+    active_charge = fetch_one_for(report, ('overview', 'charging'),
         f"""
         select
             cp.id,
@@ -1584,7 +1601,7 @@ def dashboard(
             "lifetime": lifetime or {},
             "daily": daily,
             "monthly": monthly,
-            "today_energy": today_energy(car_id, car),
+            "today_energy": today_energy(car_id, car) if report == "all" else None,
             "states": states,
             "range": range_series,
             "insights": insights or {},
@@ -1601,3 +1618,11 @@ def dashboard(
             "active_charge": active_charge,
         }
     )
+
+
+@app.get("/api/cars/{car_id}/today-energy")
+def today_energy_report(car_id: int) -> Any:
+    car = next((item for item in _cars() if item["id"] == car_id), None)
+    if car is None:
+        raise HTTPException(status_code=404, detail="未找到车辆")
+    return clean_json(today_energy(car_id, car))
