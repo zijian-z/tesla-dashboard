@@ -62,6 +62,9 @@ jobs:
           context: ${{ matrix.context }}
           file: ${{ matrix.file }}
           push: true
+          # Aliyun registry rejects the OCI empty config used by Buildx attestation manifests.
+          provenance: false
+          sbom: false
           platforms: linux/amd64
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha,scope=${{ matrix.image }}
