@@ -859,10 +859,14 @@ function App() {
   const [customStart, setCustomStart] = React.useState(() => shiftDateInput(dateInput(new Date().toISOString()), -6));
   const [activeReport, setActiveReport] = React.useState<ReportKey>('overview');
   const [dashboard, setDashboard] = React.useState<Dashboard | null>(null);
+  const [todayEnergy, setTodayEnergy] = React.useState<TodayEnergy | null>(null);
+  const [todayEnergyError, setTodayEnergyError] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [refreshKey, setRefreshKey] = React.useState(0);
+  const [liveRefreshKey, setLiveRefreshKey] = React.useState(0);
+  const [energyRefreshKey, setEnergyRefreshKey] = React.useState(0);
   const [mobileControlsOpen, setMobileControlsOpen] = React.useState(false);
   const [chartPaletteKey, setChartPaletteKey] = React.useState<ChartPaletteKey>(() => initialChartPaletteKey());
   const chartPalette = chartPalettes[chartPaletteKey];
@@ -896,7 +900,9 @@ function App() {
     setLoading(true);
     setRefreshing(true);
     setError(null);
-    getJson<Dashboard>(`/api/cars/${carId}/dashboard?${dashboardQuery}`, controller.signal)
+    const params = new URLSearchParams(dashboardQuery);
+    params.set('report', activeReport);
+    getJson<Dashboard>(`/api/cars/${carId}/dashboard?${params}`, controller.signal)
       .then((data) => setDashboard(data))
       .catch((err: Error) => {
         if (!controller.signal.aborted) setError(err.message);
@@ -908,14 +914,43 @@ function App() {
         }
       });
     return () => controller.abort();
-  }, [carId, dashboardQuery, refreshKey]);
+  }, [carId, dashboardQuery, activeReport, refreshKey, liveRefreshKey]);
 
   React.useEffect(() => {
+    if (!carId || activeReport !== 'overview' || dashboard?.car.id !== carId) return;
+    const controller = new AbortController();
+    setTodayEnergyError(false);
+    getJson<TodayEnergy>(`/api/cars/${carId}/today-energy`, controller.signal)
+      .then(setTodayEnergy)
+      .catch((err: Error) => {
+        if (!controller.signal.aborted) {
+          console.error('今日电量预测加载失败', err);
+          setTodayEnergyError(true);
+        }
+      });
+    return () => controller.abort();
+  }, [carId, activeReport, dashboard?.car.id, refreshKey, energyRefreshKey]);
+
+  React.useEffect(() => {
+    if (activeReport !== 'overview' && activeReport !== 'charging') return;
+    const refreshVisible = () => {
+      if (!document.hidden) setLiveRefreshKey((key) => key + 1);
+    };
+    const timer = window.setInterval(refreshVisible, AUTO_REFRESH_MS);
+    document.addEventListener('visibilitychange', refreshVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', refreshVisible);
+    };
+  }, [activeReport]);
+
+  React.useEffect(() => {
+    if (activeReport !== 'overview') return;
     const timer = window.setInterval(() => {
-      setRefreshKey((key) => key + 1);
-    }, AUTO_REFRESH_MS);
+      if (!document.hidden) setEnergyRefreshKey((key) => key + 1);
+    }, 5 * AUTO_REFRESH_MS);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [activeReport]);
 
   React.useEffect(() => {
     try {
@@ -1016,7 +1051,7 @@ function App() {
   );
   const todayEnergyPoints = React.useMemo(
     () =>
-      (dashboard?.today_energy?.points ?? []).map((item) => ({
+      (todayEnergy?.points ?? []).map((item) => ({
         ...item,
         hourLabel: item.hour === 24 ? '24' : String(item.hour).padStart(2, '0'),
         actual_battery_level:
@@ -1024,13 +1059,15 @@ function App() {
         predicted_battery_level:
           item.predicted_battery_level === null || item.predicted_battery_level === undefined ? null : Number(item.predicted_battery_level.toFixed(1))
       })),
-    [dashboard]
+    [todayEnergy]
   );
   const todayEnergyHasData = todayEnergyPoints.some(
     (item) => item.actual_battery_level !== null || item.predicted_battery_level !== null
   );
   const prepareDashboardRefresh = React.useCallback(() => {
     setDashboard(null);
+    setTodayEnergy(null);
+    setTodayEnergyError(false);
     setLoading(true);
     setError(null);
   }, []);
@@ -1093,11 +1130,7 @@ function App() {
     activeReport,
     carId ?? 'none',
     dashboardQuery,
-    chartPaletteKey,
-    dashboard?.data_window.first_seen_at ?? '',
-    dashboard?.data_window.last_seen_at ?? '',
-    dashboard?.data_window.since ?? '',
-    dashboard?.data_window.until ?? ''
+    chartPaletteKey
   ].join('|');
 
   const renderDailyTrend = () => (
@@ -1199,7 +1232,7 @@ function App() {
   );
 
   const renderTodayEnergyChart = () => {
-    const energy = dashboard?.today_energy;
+    const energy = todayEnergy;
     const basis = energy?.prediction_basis ? (predictionBasisLabels[energy.prediction_basis] ?? labelState(energy.prediction_basis)) : '状态未知';
     const habitDays = energy?.static_history_days;
     const aside = `${basis} · 最近 ${energy?.history_days ?? 30} 天${habitDays ? ` · ${habitDays} 天静态样本` : ''}${energy?.prediction_confidence === 'low' ? ' · 样本较少' : ''}`;
@@ -1239,7 +1272,7 @@ function App() {
             </div>
           </>
         ) : (
-          <Empty text="暂无可计算的今日电量采样" />
+          <Empty text={todayEnergyError ? '今日电量预测加载失败，请刷新重试' : todayEnergy ? '暂无可计算的今日电量采样' : '正在计算今日电量预测…'} />
         )}
       </Section>
     );
@@ -1657,7 +1690,12 @@ function App() {
               aria-selected={activeReport === item.key}
               className={activeReport === item.key ? 'active' : ''}
               key={item.key}
-              onClick={() => setActiveReport(item.key)}
+              onClick={() => {
+                if (item.key !== activeReport) {
+                  setDashboard(null);
+                  setActiveReport(item.key);
+                }
+              }}
             >
               {item.icon}
               <span>{item.label}</span>
